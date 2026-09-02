@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Security Alerts · {{ platform_title }}</title>
+<style>
+:root{color-scheme:dark;--bg:#07111f;--side:#081322;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
+.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.content{margin-left:224px;padding:22px}.brand{font-size:20px;font-weight:800;margin-bottom:22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:#c9d5e5}.nav a.active{background:#1d4ed8;color:white}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:14px}.head{display:flex;align-items:center;justify-content:space-between;gap:12px}.badge{padding:5px 8px;border-radius:6px;font-size:11px;font-weight:800}.CRITICAL{background:rgba(220,38,38,.2);color:#fb7185}.HIGH{background:rgba(217,119,6,.2);color:#fbbf24}.MEDIUM{background:rgba(37,99,235,.2);color:#93c5fd}.muted{color:var(--muted);font-size:12px}.btn{border:0;border-radius:7px;color:#fff;padding:8px 11px;background:#2563eb;font-weight:700;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:12px}.field{background:#0b1727;border:1px solid var(--line);border-radius:8px;padding:10px}.field b{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+</style>
+</head>
+<body>
+<aside class="sidebar"><div class="brand">{{ platform_name }}<br><span class="muted">Hosting Manager</span></div><nav class="nav"><a href="/">⌂ Dashboard</a><a class="active" href="/alerts">⚠ Alerts ({{ findings|length }})</a><a href="/#sites">▦ Sites</a><a href="/#logs">▤ Logs</a></nav></aside>
+<main class="content">
+<div class="head"><div><h1>Security Alerts</h1><p class="muted">Host-level WordPress integrity and redirect monitoring. Resolved findings automatically disappear on the next clean scan.</p></div>
+<form method="post" action="/alerts/scan"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Run Scan Now</button></form></div>
+
+{% with messages = get_flashed_messages() %}{% for m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endwith %}
+
+{% if not findings %}<div class="card"><h2 style="color:#4ade80">✓ No active security findings</h2><p class="muted">The most recent scan did not reproduce any security alerts.</p></div>{% endif %}
+
+{% for f in findings %}
+<section class="card">
+<div class="head"><div><span class="badge {{ f.severity }}">{{ f.severity }}</span> <strong>{{ f.site }}</strong></div><span class="muted">Last seen {{ f.last_seen }}</span></div>
+<h3>{{ f.message }}</h3>
+<div class="grid">
+<div class="field"><b>Type</b>{{ f.finding_type }}</div>
+<div class="field"><b>Path / Object</b>{{ f.path }}</div>
+<div class="field"><b>Email</b>{{ 'Sent' if f.email_sent else 'Not sent / not configured' }}</div>
+<div class="field"><b>First Seen</b>{{ f.first_seen }}</div>
+</div>
+{% if f.evidence and f.evidence != '-' %}<p><b>Evidence:</b> {{ f.evidence }}</p>{% endif %}
+</section>
+{% endfor %}
+
+<h2>Site Operations & Details</h2>
+{% for s in sites %}{% set op=site_ops[s.site] %}
+<div class="card"><div class="head"><div><strong>{{ s.site }}</strong><div class="muted">{{ s.domain }} · {{ op.mode|upper }} · External {{ op.last_external_status or '-' }}</div></div></div>
+<form method="post" action="/site-ops/{{ s.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="grid">
+<div class="field"><b>Owner</b><input name="owner_name" value="{{ op.owner_name }}"></div><div class="field"><b>Email</b><input name="owner_email" value="{{ op.owner_email }}"></div><div class="field"><b>Phone</b><input name="owner_phone" value="{{ op.owner_phone }}"></div><div class="field"><b>External Monitor URL</b><input name="external_url" value="{{ op.external_url }}"></div></div><p><b>Notes</b><br><textarea name="notes" rows="3" style="width:100%">{{ op.notes }}</textarea></p><button class="btn">Save Details</button></form>
+<p><form style="display:inline" method="post" action="/site-mode/{{ s.site }}/maintenance"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Maintenance</button></form>
+<form style="display:inline" method="post" action="/site-mode/{{ s.site }}/quarantine"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#dc2626">Quarantine</button></form>
+<form style="display:inline" method="post" action="/site-mode/{{ s.site }}/live"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#059669">Return Live</button></form>
+<form style="display:inline" method="post" action="/staging-clone/{{ s.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Create Staging Clone</button></form></p></div>{% endfor %}
+<h2>Trusted Baselines</h2>
+{% for s in sites %}
+<div class="card"><div class="head"><div><strong>{{ s.site }}</strong><div class="muted">{{ s.domain }}</div></div>
+<form method="post" action="/alerts/baseline/{{ s.site }}" onsubmit="return confirm('Replace the trusted security baseline for {{ s.site }} with its current state? Only do this when you believe the site is clean.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Set Current State as Trusted</button></form></div></div>
+{% endfor %}
+</main></body></html>

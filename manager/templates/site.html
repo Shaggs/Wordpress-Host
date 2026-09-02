@@ -1,0 +1,107 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ site.domain }} · WP Host Manager</title>
+<style>
+:root{color-scheme:dark;--bg:#07111f;--side:#081322;--panel:#0f1b2d;--panel2:#0b1727;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626;--purple:#7c3aed}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}a{color:#60a5fa;text-decoration:none}.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:18px;font-weight:850;margin:5px 8px 22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:#c9d5e5}.nav a.active,.nav a:hover{background:#173c7a;color:#fff}.main{margin-left:224px;padding:22px;min-height:100vh}.back{display:inline-block;margin-bottom:15px;color:#d6e0ed}.hero{display:grid;grid-template-columns:1fr 370px;gap:16px}.card{background:linear-gradient(180deg,#101e31,#0d192a);border:1px solid var(--line);border-radius:12px;padding:17px}.title{font-size:27px;font-weight:900;margin:0 0 5px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}.chip{background:#17263b;padding:6px 9px;border-radius:7px;font-size:12px}.good{color:#4ade80}.bad{color:#fb7185}.warn{color:#fbbf24}.statusline{font-size:18px;font-weight:850}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}.metric{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px}.metric b{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.metric strong{font-size:20px}.actionsbar{display:grid;grid-template-columns:1.2fr .8fr auto;gap:20px;align-items:end}.sectiontitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}.buttonrow{display:flex;gap:9px;flex-wrap:wrap}.btn{border:1px solid #2f5ea5;background:#12294b;color:#fff;border-radius:8px;padding:10px 16px;font-weight:800;cursor:pointer}.btn.green{background:#0a493b;border-color:#087e61}.btn.orange{background:#5b360e;border-color:#b5670b}.btn.red{background:#561b29;border-color:#c62b43}.btn.purple{background:#34205b;border-color:#7241b5}.access{display:flex;gap:9px}.morewrap{position:relative}.morepanel{display:none;position:absolute;right:0;top:50px;width:760px;z-index:20;background:#0b1727;border:1px solid #31506f;border-radius:12px;padding:13px;box-shadow:0 18px 50px #0009}.morewrap.open .morepanel{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.moreitem{border:1px solid var(--line);border-radius:9px;padding:10px}.moreitem p{font-size:11px;color:var(--muted);min-height:42px}.moreitem .btn{width:100%;padding:8px}.tabs{display:flex;gap:4px;margin-top:17px;border-bottom:1px solid var(--line);overflow-x:auto}.tab{padding:11px 15px;color:#b8c5d6;cursor:pointer;border-bottom:2px solid transparent}.tab.active{color:#60a5fa;border-color:#3b82f6}.tabpane{display:none;padding-top:16px}.tabpane.active{display:block}.info{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.info .card .row{display:flex;justify-content:space-between;gap:12px;margin:9px 0;font-size:13px}.table{width:100%;border-collapse:collapse;font-size:12px}.table th,.table td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}.table th{color:#93c5fd}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.note{white-space:pre-wrap;color:#cad5e3}.fields{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.fields input,.fields textarea{width:100%;background:#091522;border:1px solid var(--line);color:#fff;border-radius:7px;padding:9px}
+@media(max-width:1150px){.hero{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.actionsbar{grid-template-columns:1fr}.morepanel{position:fixed;left:10%;right:10%;width:auto;top:20%}.info{grid-template-columns:1fr}}@media(max-width:760px){.sidebar{display:none}.main{margin-left:0;padding:13px}.metrics{grid-template-columns:1fr}}
+</style></head><body>
+<aside class="sidebar"><div class="brand">WP Host Manager</div><nav class="nav"><a href="/">⌂ Dashboard</a><a class="active" href="/sites">▦ Sites</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_count %}<span class="bad">({{ security_count }})</span>{% endif %}</a>{% endif %}<a href="/#logs">▤ Logs</a></nav></aside>
+<main class="main">
+<a class="back" href="/sites">← Back to Sites</a>
+{% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
+<div class="hero">
+<section class="card"><h1 class="title">{{ site.domain }}</h1><a target="_blank" href="https://{{ site.domain }}">https://{{ site.domain }} ↗</a>
+<div class="chips"><span class="chip">WordPress {{ site.wp_version }}</span><span class="chip">PHP {{ runtime.php_version }}</span><span class="chip">Plugins {{ runtime.active_plugins }}</span><span class="chip">Container {{ site.site }}-wp</span></div></section>
+<section class="card"><div class="statusline {{ 'good' if site.status=='running' else 'bad' }}">● {{ site.status|title }}</div><div class="row">Mode: <b>{{ site.mode|upper }}</b></div><div class="row">Uptime: <b>{{ runtime.uptime }}</b></div><div class="row">Last backup: <b>{{ site.backup }}</b></div><div class="row">Restarts: <b>{{ runtime.restart_count }}</b></div></section>
+</div>
+
+<div class="metrics"><div class="metric"><b>CPU Usage</b><strong>{{ site.live_cpu }}%</strong></div><div class="metric"><b>RAM Usage</b><strong>{{ site.live_memory }}</strong><div>{{ site.memory }} limit</div></div><div class="metric"><b>Storage</b><strong>{{ site.storage }}</strong></div><div class="metric"><b>Core Integrity</b><strong class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</strong></div><div class="metric"><b>External Uptime</b><strong>{{ ops.last_external_status or '-' }}</strong><div>{{ ops.last_external_ms or '-' }} ms</div></div></div>
+
+<section class="card actionsbar">
+<div><div class="sectiontitle">Actions</div><div class="buttonrow">
+{% if current_role in ['admin','user'] %}
+<form method="post" action="/action/{{ site.site }}/restart"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">↻ Restart</button></form>
+<form method="post" action="/action/{{ site.site }}/update"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">⇧ Update</button></form>
+<form method="post" action="/action/{{ site.site }}/backup"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">☁ Backup</button></form>
+<form method="post" action="/action/{{ site.site }}/restore-latest"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">↶ Restore</button></form>
+{% else %}<span class="muted">Read only</span>{% endif %}
+</div></div>
+<div><div class="sectiontitle">Access</div><div class="access">
+<span class="btn green">{{ '✓ SSL Active' if site.proxy_ssl.startswith('SSL') else 'SSL Not Provisioned' }}</span>
+{% if current_role in ['admin','user'] %}
+  {% if site.sftp_enabled %}
+  <form method="post" action="/action/{{ site.site }}/sftp-disable"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn purple" type="submit">SFTP: ON · Port {{ site.sftp_port }} · Disable</button></form>
+  <form method="post" action="/action/{{ site.site }}/sftp-reset-password"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn purple" type="submit">Reset SFTP Password</button></form>
+  {% else %}
+  <form method="post" action="/action/{{ site.site }}/sftp-enable"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn purple" type="submit">SFTP: OFF · Enable</button></form>
+  {% endif %}
+{% else %}
+<span class="btn purple">SFTP: {{ ('ON · Port ' ~ site.sftp_port) if site.sftp_enabled else 'OFF' }}</span>
+{% endif %}
+{% if site.phpmyadmin_enabled and site.phpmyadmin_port != '-' %}
+<a class="btn" target="_blank" rel="noopener" href="http://{{ manager_public_host }}:{{ site.phpmyadmin_port }}">phpMyAdmin ↗</a>
+{% elif current_role in ['admin','user'] %}
+<form method="post" action="/action/{{ site.site }}/phpmyadmin-enable"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" type="submit">Repair phpMyAdmin</button></form>
+{% endif %}
+</div></div>
+{% if current_role in ['admin','user'] %}<div class="morewrap" id="moreWrap"><button class="btn" type="button" onclick="document.getElementById('moreWrap').classList.toggle('open')">More ⋯</button><div class="morepanel">
+<div class="moreitem"><b class="warn">Maintenance</b><p>Show a maintenance page while keeping the site online.</p><form method="post" action="/site-mode/{{ site.site }}/maintenance"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Maintenance</button></form></div>
+<div class="moreitem"><b>Staging</b><p>Create an isolated WordPress and database clone.</p><form method="post" action="/staging-clone/{{ site.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Clone</button></form></div>
+<div class="moreitem"><b class="bad">Quarantine</b><p>Immediately remove this WordPress container from public proxy access.</p><form method="post" action="/site-mode/{{ site.site }}/quarantine"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Quarantine</button></form></div>
+<div class="moreitem"><b>Stop</b><p>Stop the WordPress container.</p><form method="post" action="/action/{{ site.site }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Stop Site</button></form></div>
+<div class="moreitem"><b class="bad">Delete</b><p>Delete the site containers and associated site record.</p><form method="post" action="/action/{{ site.site }}/delete" onsubmit="return confirm('Delete {{ site.site }}?')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Delete</button></form></div>
+</div></div>{% endif %}
+</section>
+
+<nav class="tabs">{% for id,label in [('overview','Overview'),('backups','Backups'),('plugins','Plugins'),('themes','Themes'),('database','Database'),('logs','Logs'),('security','Security'),('migration','Migration'),('settings','Settings')] %}<div class="tab {{ 'active' if loop.first else '' }}" onclick="showTab('{{ id }}',this)">{{ label }}</div>{% endfor %}</nav>
+
+<section class="tabpane active" id="tab-overview"><div class="info">
+<div class="card"><h3>Site Information</h3><div class="row"><span>Site ID</span><b>{{ site.site }}</b></div><div class="row"><span>Domain</span><b>{{ site.domain }}</b></div><div class="row"><span>WordPress</span><b>{{ site.wp_version }}</b></div><div class="row"><span>PHP</span><b>{{ runtime.php_version }}</b></div><div class="row"><span>Owner</span><b>{{ ops.owner_name or '-' }}</b></div></div>
+<div class="card"><h3>Resource Limits</h3><div class="row"><span>CPU</span><b>{{ site.cpu }} cores</b></div><div class="row"><span>RAM</span><b>{{ site.memory }}</b></div><div class="row"><span>Current RAM</span><b>{{ site.live_memory }}</b></div><div class="row"><span>Restarts</span><b>{{ runtime.restart_count }}</b></div></div>
+<div class="card"><h3>Database</h3><div class="row"><span>Name</span><b>{{ runtime.db_name }}</b></div><div class="row"><span>User</span><b>{{ runtime.db_user }}</b></div><div class="row"><span>Host</span><b>{{ runtime.db_host }}</b></div><div class="row"><span>Health</span><b>{{ site.db_health }}</b></div></div>
+</div></section>
+
+<section class="tabpane" id="tab-backups"><div class="card"><h3>Backup History</h3><table class="table"><tr><th>Backup</th><th>Created (Adelaide)</th><th>Size</th></tr>{% for b in backups %}<tr><td>{{ b.name }}</td><td>{{ b.created }}</td><td>{{ b.size }}</td></tr>{% else %}<tr><td colspan="3">No backups found.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-plugins"><div class="card"><h3>Plugins</h3><table class="table"><tr><th>Plugin</th><th>Version</th></tr>{% for p in runtime.plugin_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No plugin inventory available.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-themes"><div class="card"><h3>Themes</h3><table class="table"><tr><th>Theme</th><th>Version</th></tr>{% for p in runtime.theme_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No theme inventory available.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-database"><div class="card"><h3>Database</h3><p>Database host: <b>{{ runtime.db_host }}</b></p><p>Database name: <b>{{ runtime.db_name }}</b></p><p>Database user: <b>{{ runtime.db_user }}</b></p>{% if site.phpmyadmin_enabled and site.phpmyadmin_port != '-' %}<a class="btn" target="_blank" rel="noopener" href="http://{{ manager_public_host }}:{{ site.phpmyadmin_port }}">Open phpMyAdmin ↗</a>{% elif current_role in ['admin','user'] %}<form method="post" action="/action/{{ site.site }}/phpmyadmin-enable"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Repair phpMyAdmin</button></form>{% endif %}</div></section>
+<section class="tabpane" id="tab-logs"><div class="card"><h3>Site Audit Log</h3><table class="table"><tr><th>Time (Adelaide)</th><th>User</th><th>Action</th><th>Result</th><th>Detail</th></tr>{% for x in audits %}<tr><td>{{ x.timestamp }}</td><td>{{ x.username }}</td><td>{{ x.action }}</td><td>{{ x.result }}</td><td>{{ x.detail }}</td></tr>{% else %}<tr><td colspan="5">No site-specific audit events.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-security"><div class="card"><h3>Security</h3><p>WordPress core checksums: <b class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</b></p><table class="table"><tr><th>Severity</th><th>Finding</th><th>Path</th><th>Last Seen (Adelaide)</th></tr>{% for f in findings %}<tr><td>{{ f.severity }}</td><td>{{ f.message }}</td><td>{{ f.path }}</td><td>{{ f.last_seen }}</td></tr>{% else %}<tr><td colspan="4">No active security findings.</td></tr>{% endfor %}</table></div></section>
+{% if site.sftp_enabled %}<section class="card" style="margin-top:16px"><h3>SFTP Access</h3><div class="row"><span>Status</span><b class="good">ENABLED</b></div><div class="row"><span>Host</span><b>{{ manager_public_host }}</b></div><div class="row"><span>Allocated Port</span><b>{{ site.sftp_port }}</b></div><div class="row"><span>Username</span><b>wordpress</b></div><div class="row"><span>Protocol</span><b>SFTP / SSH</b></div><p class="muted">Use the allocated port shown above. The password is shown only when SFTP is enabled/reset. Use SFTP, not FTP/FTPS.</p></section>{% endif %}
+<section class="tabpane" id="tab-migration">
+<div class="card">
+<h3>WordPress Migration / Import</h3><p class="muted">Technician workflow: pre-flight, safe first boot, component quarantine, full validation and rollback. No client-facing status is generated.</p>
+<p class="muted">Upload one complete WordPress ZIP and one SQL dump using SFTP. V8 preserves the source package, takes a rollback backup, rebuilds the live site, normalises Docker/HTTPS configuration and validates the result.</p>
+<div class="fields"><div><b>Target URL</b><br>https://{{ site.domain }}</div><div><b>Source folder</b><br>/opt/wp-host/sites/{{ site.site }}/migration-source</div></div>
+<h4>Detected Source Files</h4>
+<table class="table"><tr><th>File</th><th>Type</th><th>Size</th><th>Modified (Adelaide)</th></tr>
+{% for f in migration_files %}<tr><td>{{ f.name }}</td><td>{{ f.kind }}</td><td>{{ f.size }}</td><td>{{ f.modified }}</td></tr>
+{% else %}<tr><td colspan="4">No ZIP/SQL source files detected. Files placed in the site's WordPress/SFTP upload folder are detected automatically.</td></tr>{% endfor %}</table>
+{% if current_role in ['admin','user'] %}
+<form method="post" action="/site/{{ site.site }}/migrate" onsubmit="return confirm('This replaces the live WordPress files and recreates/imports the site database after taking a rollback backup. Continue?')">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<p><label>Old URL override (optional)<br><input name="old_url" style="width:100%;max-width:560px" placeholder="https://old-domain.example"></label></p>
+<button class="btn orange">Start Migration</button>
+</form>{% endif %}
+</div>
+{% if migration_report %}<div class="card"><h3>Latest Migration Report</h3>
+<p><b>Status:</b> <span class="{{ 'good' if migration_report.status=='success' else 'warn' if migration_report.status=='attention' else 'bad' }}">{{ migration_report.status|upper }}</span></p>
+{% if migration_report.rollback_path and current_role in ['admin','user'] %}
+<form method="post" action="/site/{{ site.site }}/migration-rollback" onsubmit="return confirm('Rollback this site to the pre-migration files and database?');" style="margin:10px 0">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<button class="btn red">Rollback Migration</button>
+</form>
+{% endif %}
+<p><b>Started:</b> {{ migration_report.started or '-' }} &nbsp; <b>Finished:</b> {{ migration_report.finished or '-' }}</p>
+<p><b>Source:</b> {{ migration_report.zip or '-' }} + {{ migration_report.sql or '-' }}</p>
+{% if migration_report.old_url %}<p><b>URL:</b> {{ migration_report.old_url }} → {{ migration_report.new_url }}</p>{% endif %}
+<table class="table"><tr><th>Step</th><th>Result</th><th>Detail</th></tr>{% for s in migration_report.steps or [] %}<tr><td>{{ s.name }}</td><td class="{{ 'good' if s.ok else 'bad' }}">{{ 'PASS' if s.ok else 'FAIL' }}</td><td>{{ s.detail }}</td></tr>{% endfor %}</table>
+{% if migration_report.checks %}<h4>Validation</h4><table class="table"><tr><th>Check</th><th>Result</th><th>Detail</th></tr>{% for c in migration_report.checks %}<tr><td>{{ c.check }}</td><td class="{{ 'good' if c.ok else 'bad' }}">{{ 'PASS' if c.ok else 'FAIL' }}</td><td>{{ c.detail }}</td></tr>{% endfor %}</table>{% endif %}
+</div>{% endif %}
+</section>
+<section class="tabpane" id="tab-settings"><div class="card"><h3>Owner & Site Details</h3><form method="post" action="/site-ops/{{ site.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="fields"><input name="owner_name" value="{{ ops.owner_name }}" placeholder="Owner name"><input name="owner_email" value="{{ ops.owner_email }}" placeholder="Owner email"><input name="owner_phone" value="{{ ops.owner_phone }}" placeholder="Owner phone"><input name="external_url" value="{{ ops.external_url }}" placeholder="External monitor URL"></div><p><textarea name="notes" rows="5" placeholder="Site notes">{{ ops.notes }}</textarea></p>{% if current_role in ['admin','user'] %}<button class="btn" type="submit">Save Site Details</button>{% endif %}</form></div></section>
+</main>
+<script>
+function showTab(id,el){document.querySelectorAll('.tabpane').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+id).classList.add('active');el.classList.add('active')}
+document.addEventListener('click',e=>{const w=document.getElementById('moreWrap');if(w&&w.classList.contains('open')&&!w.contains(e.target))w.classList.remove('open')})
+</script></body></html>

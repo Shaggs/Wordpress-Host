@@ -1,0 +1,33 @@
+WordPress Hosting Platform V9.4 - firewall guidance
+
+PUBLIC WEB (normally always allowed)
+  TCP 80
+  TCP 443
+
+ADMIN / CONTROL PLANE
+  TCP 22 (or your actual SSH port) - restrict to trusted sources where practical
+  TCP 81    Nginx Proxy Manager administration - trusted admin sources only
+  TCP 8088  Manager backend - prefer HTTPS reverse proxy / trusted sources only
+
+TEMPORARY PER-SITE MANAGEMENT RANGES
+  TCP 21000-21999  SFTP
+  TCP 22000-22999  phpMyAdmin
+
+Do NOT permanently allow the SFTP/phpMyAdmin ranges in UFW. V9.4 creates exact,
+source-IP-restricted UFW rules only while a technician has an active access session.
+The upstream router/cloud firewall may permit the ranges to reach the Ubuntu host,
+while UFW remains the on-demand final gate.
+
+Example UFW baseline - REVIEW YOUR SSH PORT BEFORE RUNNING:
+
+  sudo ufw allow OpenSSH
+  sudo ufw allow 80/tcp
+  sudo ufw allow 443/tcp
+  sudo ufw default deny incoming
+  sudo ufw default allow outgoing
+  sudo ufw enable
+
+If SSH is not on TCP 22, replace OpenSSH with the correct rule before enabling UFW.
+
+The manager intentionally refuses temporary access unless UFW is active and incoming
+policy is default-deny/reject.

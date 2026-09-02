@@ -1,0 +1,28 @@
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: wp-npm
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    environment:
+      DISABLE_IPV6: "true"
+      INITIAL_ADMIN_EMAIL: "${NPM_ADMIN_EMAIL}"
+      INITIAL_ADMIN_PASSWORD: "${NPM_ADMIN_PASSWORD}"
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+    networks:
+      - wp-proxy
+
+networks:
+  wp-proxy:
+    external: true
+    name: "${PROXY_NETWORK:-wp-proxy}"

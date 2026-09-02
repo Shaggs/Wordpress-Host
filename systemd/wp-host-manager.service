@@ -1,0 +1,16 @@
+[Unit]
+Description=WordPress Hosting Platform Manager
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wp-host/manager
+EnvironmentFile=/opt/wp-host/manager/manager.env
+ExecStart=/opt/wp-host/manager/venv/bin/gunicorn --workers 1 --threads 4 --bind 0.0.0.0:${WP_DASHBOARD_PORT} app:APP
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

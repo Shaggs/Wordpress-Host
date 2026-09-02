@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ $# -eq 1 ]] || { echo "Usage: wordpress-backup SITE"; exit 1; }
+SITE="$1"; DIR="/opt/wp-host/sites/$SITE"; DEST="/opt/wp-host/backups/$SITE"
+[[ -d "$DIR" ]] || { echo "Unknown site: $SITE"; exit 1; }
+mkdir -p "$DEST"; STAMP="$(date +%Y%m%d-%H%M%S)"
+set -a; source "$DIR/.env"; set +a
+docker exec "${SITE}-db" mariadb-dump -u"$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" | gzip >"$DEST/${STAMP}-database.sql.gz"
+tar -czf "$DEST/${STAMP}.tar.gz" -C "$DIR" wordpress compose.yml .env site.json
+echo "Backup written to: $DEST"

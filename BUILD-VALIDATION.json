@@ -1,0 +1,32 @@
+{
+  "release": "9.4.0",
+  "validation_date": "2026-09-02",
+  "checks": {
+    "python_ast:manager/app.py": "PASS",
+    "python_ast:manager/migration_engine.py": "PASS",
+    "python_ast:tests/auth_preflight.py": "PASS",
+    "ufw_status_check": "PASS",
+    "ufw_default_deny_enforced": "PASS",
+    "source_ip_restriction": "PASS",
+    "session_persistence": "PASS",
+    "expiry_worker": "PASS",
+    "multiple_sessions": "PASS",
+    "close_all_route": "PASS",
+    "port_manager_route": "PASS",
+    "sftp_range": "PASS",
+    "phpmyadmin_range": "PASS",
+    "fresh_installer_installs_ufw": "PASS",
+    "installer_does_not_enable_ufw": "PASS",
+    "runtime_session_state_gitignored": "PASS",
+    "no_runtime_state": "PASS",
+    "no_historical_patch_artifacts": "PASS",
+    "neutral_source_scan": "PASS",
+    "bash_n:install.sh": "PASS",
+    "bash_n:scripts/wordpress-restart": "PASS",
+    "bash_n:scripts/wordpress-backup": "PASS",
+    "bash_n:scripts/wordpress-update": "PASS",
+    "bash_n:scripts/wordpress-list": "PASS"
+  },
+  "dynamic_test_note": "Full Flask runtime preflight was not executed in the build container because Flask/PyOTP/Docker Python dependencies are not installed. The clean installer installs target dependencies and retains tests/auth_preflight.py.",
+  "app_sha256": "16d022d69a19ea11d3431fdd54fda993d0f6301214cefa6245595157e14a8cf1"
+}

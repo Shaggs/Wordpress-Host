@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+BASE="/opt/wp-host/sites"
+printf "%-28s %-35s %-12s\n" "SITE" "DOMAIN" "STATUS"
+for d in "$BASE"/*; do
+  [[ -d "$d" && -f "$d/site.json" ]] || continue
+  site="$(basename "$d")"
+  domain="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("domain","-"))' "$d/site.json")"
+  status="$(docker inspect -f '{{.State.Status}}' "${site}-wp" 2>/dev/null || echo not-created)"
+  printf "%-28s %-35s %-12s\n" "$site" "$domain" "$status"
+done

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ $# -eq 1 ]] || { echo "Usage: wordpress-restart SITE"; exit 1; }
+DIR="/opt/wp-host/sites/$1"; [[ -d "$DIR" ]] || { echo "Unknown site: $1"; exit 1; }
+cd "$DIR"; docker compose restart

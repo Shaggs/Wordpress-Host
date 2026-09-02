@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ platform_title }} Login</title>
+<style>
+:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);font-family:Inter,system-ui,Segoe UI,sans-serif;color:var(--text)}
+.box{width:min(420px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:28px}
+h1{margin:0 0 6px}p{color:var(--muted)}label{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+input{width:100%;padding:11px 12px;border-radius:8px;border:1px solid var(--line);background:#0b1727;color:#fff}
+button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;background:var(--blue);color:#fff;font-weight:800}
+.flash{padding:10px 12px;background:#17263b;border:1px solid var(--line);border-radius:8px;margin-bottom:12px}
+</style></head><body><div class="box">
+<h1>{{ platform_title }}</h1><p>Sign in to manage hosted WordPress sites.</p>
+{% with messages = get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
+<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<label>Username</label><input name="username" autocomplete="username" required>
+<label>Password</label><input type="password" name="password" autocomplete="current-password" required>
+<button type="submit">Sign In</button></form></div></body></html>
