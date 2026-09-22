@@ -1,5 +1,13 @@
 # Changelog
 
+## 9.5.0
+- Added a per-disk usage table to the dashboard's System section, listing every mounted filesystem (device, mountpoint, filesystem type, used/total/free, percentage).
+- The dashboard's headline Storage metric now reports the platform's actual data disk rather than the OS root filesystem.
+- Added a selectable local backup destination: admins can choose which mounted disk stores local backups (primary array, a second RAID array, or any other mounted volume), with automatic safe fallback if the chosen disk is ever unmounted, and an optional one-click migration of existing backups.
+- Added NAS backup replication as a secondary destination (SMB/CIFS): every local backup is copied and verified against the NAS automatically once configured and mounted, with independent retention. A NAS outage never blocks or breaks the local backup.
+- New admin page: /admin/backup-destination, covering both local destination and NAS configuration (Test / Mount / Unmount controls, persistent systemd mount unit, root-only stored credentials).
+- Retains all V9.4 temporary access, V9.3 port allocation and V9.2 authentication/MFA/SMTP functionality.
+
 ## 9.4.0
 - Added temporary per-site UFW management access for phpMyAdmin and SFTP.
 - Temporary access is restricted to the technician source IP rather than opening the port globally.

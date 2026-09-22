@@ -93,6 +93,7 @@ APP.jinja_env.filters["adelaide"] = format_adelaide
 BASE = Path(os.environ.get("WP_HOST_DIR", "/opt/wp-host"))
 SITES = Path(os.environ.get("WP_SITES_DIR", str(BASE / "sites")))
 BACKUPS = Path(os.environ.get("WP_BACKUP_DIR", str(BASE / "backups")))
+_DEFAULT_BACKUP_ROOT = BACKUPS  # static default, used as the fallback inside backup_root()
 PROXY_NETWORK = os.environ.get("WP_PROXY_NETWORK", "wp-proxy")
 AUTH_USER = os.environ["WP_DASHBOARD_USER"]
 AUTH_EMAIL = os.environ.get("WP_DASHBOARD_EMAIL", "")
@@ -443,8 +444,8 @@ HTML = r"""
 </style></head><body>
 <aside class="sidebar">
 <div class="brand"><div class="brandmark">{{ platform_name[:1]|upper }}</div><div><strong>{{ platform_name }}</strong><small>Hosting Manager</small></div></div>
-<nav class="nav"><a class="active" href="/">⌂ Dashboard</a><a href="/sites">▦ Sites</a><a href="#backups">◫ Backups</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_alert_count %}<span class="bad">({{ security_alert_count }})</span>{% endif %}</a>{% endif %}{% if current_role == 'admin' %}<a href="/users">♟ Users</a><a href="/admin/email-settings">✉ Email Settings</a><a href="/admin/ports">⇄ Port Manager</a>{% endif %}<a href="#system">⚙ System</a><a href="#logs">▤ Logs</a></nav>
-<div class="sidefoot"><div class="health"><h4>● System Healthy</h4><div class="mrow"><span>CPU</span><span>{{ host_stats.cpu }}%</span></div><div class="track"><b style="width:{{ host_stats.cpu }}%"></b></div><div class="mrow"><span>RAM</span><span>{{ host_stats.ram_percent }}%</span></div><div class="track"><b style="width:{{ host_stats.ram_percent }}%"></b></div><div class="mrow"><span>Storage</span><span>{{ host_stats.disk_percent }}%</span></div><div class="track"><b style="width:{{ host_stats.disk_percent }}%"></b></div></div>
+<nav class="nav"><a class="active" href="/">⌂ Dashboard</a><a href="/sites">▦ Sites</a><a href="#backups">◫ Backups</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_alert_count %}<span class="bad">({{ security_alert_count }})</span>{% endif %}</a>{% endif %}{% if current_role == 'admin' %}<a href="/users">♟ Users</a><a href="/admin/email-settings">✉ Email Settings</a><a href="/admin/backup-destination">💾 Backup Destination</a><a href="/admin/ports">⇄ Port Manager</a>{% endif %}<a href="#system">⚙ System</a><a href="#logs">▤ Logs</a></nav>
+<div class="sidefoot"><div class="health"><h4>● System Healthy</h4><div class="mrow"><span>CPU</span><span>{{ host_stats.cpu }}%</span></div><div class="track"><b style="width:{{ host_stats.cpu }}%"></b></div><div class="mrow"><span>RAM</span><span>{{ host_stats.ram_percent }}%</span></div><div class="track"><b style="width:{{ host_stats.ram_percent }}%"></b></div>{% for d in host_stats.disks %}<div class="mrow"><span>{{ d.mountpoint }}</span><span>{{ d.percent }}%</span></div><div class="track"><b style="width:{{ d.percent }}%"></b></div>{% endfor %}</div>
 <div class="userbox"><div class="avatar">{{ current_user[:1]|upper }}</div><div><strong>{{ current_user }}</strong><div class="muted">{{ current_role|title }}</div></div></div><p><a href="/logout">⇱ Log out</a></p></div>
 </aside>
 <div class="content"><header class="top"><h1>Dashboard</h1><div><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"> <a class="btn blue" href="/">↻ Refresh</a></div></header><main>
@@ -475,7 +476,9 @@ HTML = r"""
 {% else %}<tr><td colspan="5">No recent activity.</td></tr>{% endfor %}
 </tbody></table></section>
 
-<section class="section" id="system"><div class="sectionhead"><h2>System</h2></div><div class="kpis" style="margin:0"><div class="kpi"><strong>{{ host_stats.cpu }}%</strong>CPU</div><div class="kpi"><strong>{{ host_stats.ram_percent }}%</strong>RAM</div><div class="kpi"><strong>{{ host_stats.disk_percent }}%</strong>Disk</div><div class="kpi"><strong>{{ host_stats.uptime }}</strong>Uptime</div><div class="kpi"><strong>{{ host_stats.docker_running }}/{{ host_stats.docker_total }}</strong>Docker</div></div></section>
+<section class="section" id="system"><div class="sectionhead"><h2>System</h2></div><div class="kpis" style="margin:0"><div class="kpi"><strong>{{ host_stats.cpu }}%</strong>CPU</div><div class="kpi"><strong>{{ host_stats.ram_percent }}%</strong>RAM</div><div class="kpi"><strong>{{ host_stats.disk_percent }}%</strong>Disk</div><div class="kpi"><strong>{{ host_stats.uptime }}</strong>Uptime</div><div class="kpi"><strong>{{ host_stats.docker_running }}/{{ host_stats.docker_total }}</strong>Docker</div></div>
+<table style="margin-top:16px"><tr><th>Mountpoint</th><th>Device</th><th>FS Type</th><th>Used</th><th>Total</th><th>Free</th><th>Used %</th></tr>{% for d in host_stats.disks %}<tr><td>{{ d.mountpoint }}</td><td>{{ d.device }}</td><td>{{ d.fstype }}</td><td>{{ d.used }}</td><td>{{ d.total }}</td><td>{{ d.free }}</td><td><span class="{{ 'bad' if d.percent >= 90 else ('warn' if d.percent >= 75 else 'good') }}">{{ d.percent }}%</span></td></tr>{% else %}<tr><td colspan="7">No disks detected.</td></tr>{% endfor %}</table>
+</section>
 <section class="section" id="logs"><div class="sectionhead"><h2>Platform Action Audit</h2></div><div class="audit"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th>Result</th><th>IP</th><th>Detail</th></tr></thead><tbody>{% for a in audit_events %}<tr><td>{{ a.timestamp }}</td><td>{{ a.username }}</td><td>{{ a.action }}</td><td>{{ a.target }}</td><td>{{ a.result }}</td><td>{{ a.ip }}</td><td>{{ a.detail }}</td></tr>{% endfor %}</tbody></table></div></section>
 </main></div>
 <script>function filterSites(q){q=(q||'').toLowerCase();document.querySelectorAll('.sitecard').forEach(x=>x.style.display=(x.dataset.site+' '+x.dataset.domain+' '+x.dataset.status).includes(q)?'grid':'none')}function sortSites(){const k=document.getElementById('sorter').value,w=document.getElementById('sitecards');[...w.querySelectorAll('.sitecard')].sort((a,b)=>(a.dataset[k]||'').localeCompare(b.dataset[k]||'')).forEach(x=>w.appendChild(x))}</script>
@@ -885,8 +888,43 @@ def recent_audit_events(limit=100):
         ).fetchall()
     return [dict(timestamp=format_adelaide(r[0]), username=r[1], action=r[2], target=r[3], result=r[4], ip=r[5], detail=r[6]) for r in rows]
 
+def all_disk_usage():
+    """Enumerate every real (non-pseudo) mounted filesystem with usage stats."""
+    disks = []
+    seen = set()
+    try:
+        partitions = psutil.disk_partitions(all=False)
+    except Exception:
+        partitions = []
+    for part in partitions:
+        if part.mountpoint in seen:
+            continue
+        if part.fstype in ("tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs",
+                            "cgroup", "cgroup2", "devpts", "mqueue", "debugfs", "tracefs"):
+            continue
+        try:
+            du = psutil.disk_usage(part.mountpoint)
+        except Exception:
+            continue
+        seen.add(part.mountpoint)
+        disks.append({
+            "device": part.device,
+            "mountpoint": part.mountpoint,
+            "fstype": part.fstype,
+            "used": human_bytes(du.used),
+            "total": human_bytes(du.total),
+            "free": human_bytes(du.free),
+            "percent": du.percent,
+        })
+    disks.sort(key=lambda d: d["mountpoint"])
+    return disks
+
 def host_stats():
-    disk = psutil.disk_usage("/")
+    try:
+        disk = psutil.disk_usage(str(BASE))
+    except Exception:
+        disk = psutil.disk_usage("/")
+    disks = all_disk_usage()
     vm = psutil.virtual_memory()
     npm = "Unavailable"
     try:
@@ -914,6 +952,7 @@ def host_stats():
         "disk_used": human_bytes(disk.used),
         "disk_total": human_bytes(disk.total),
         "disk_percent": disk.percent,
+        "disks": disks,
         "load": ", ".join(f"{x:.2f}" for x in psutil.getloadavg()) if hasattr(psutil, "getloadavg") else "-",
         "net_rx": human_bytes(net.bytes_recv),
         "net_tx": human_bytes(net.bytes_sent),
@@ -924,7 +963,10 @@ def host_stats():
 
 def collect_host_metric():
     vm = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    try:
+        disk = psutil.disk_usage(str(BASE))
+    except Exception:
+        disk = psutil.disk_usage("/")
     net = psutil.net_io_counters()
     cpu = psutil.cpu_percent(interval=0.2)
     ts = int(time.time())
@@ -2448,8 +2490,203 @@ def active_alerts():
             })
     return alerts
 
+LOCAL_BACKUP_DEST_FILE = BASE / "local-backup-destination.json"
+
+def available_backup_destinations():
+    """Real mounted filesystems that are reasonable candidates for local backup storage."""
+    return [d for d in all_disk_usage() if d["mountpoint"] not in ("/boot", "/boot/efi")]
+
+def load_backup_root_choice():
+    if LOCAL_BACKUP_DEST_FILE.exists():
+        try:
+            data = json.loads(LOCAL_BACKUP_DEST_FILE.read_text())
+            mp = data.get("mountpoint")
+            if mp:
+                return mp
+        except Exception:
+            pass
+    return None
+
+def save_backup_root_choice(mountpoint):
+    tmp = LOCAL_BACKUP_DEST_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"mountpoint": mountpoint}, indent=2))
+    tmp.replace(LOCAL_BACKUP_DEST_FILE)
+
+def current_backup_mountpoint():
+    chosen = load_backup_root_choice()
+    mounted = {d["mountpoint"] for d in all_disk_usage()}
+    if chosen and chosen in mounted:
+        return chosen
+    return str(BASE)
+
+def backup_root():
+    mp = current_backup_mountpoint()
+    if mp == str(BASE):
+        return _DEFAULT_BACKUP_ROOT
+    return Path(mp) / "wp-host-backups"
+
+BACKUP_STORAGE_FILE = BASE / "backup-storage.json"
+BACKUP_CREDENTIALS_DIR = Path("/etc/wp-host/credentials")
+BACKUP_MOUNT_ROOT = Path("/mnt/wp-host")
+
+def load_backup_storage():
+    defaults = {"type":"smb", "name":"Network NAS", "server":"", "share":"", "username":"", "mount_name":"nas", "retention":30}
+    if BACKUP_STORAGE_FILE.exists():
+        try:
+            data = json.loads(BACKUP_STORAGE_FILE.read_text())
+            defaults.update({k:v for k,v in data.items() if k != "password"})
+        except Exception:
+            pass
+    return defaults
+
+def save_backup_storage(data):
+    BASE.mkdir(parents=True, exist_ok=True)
+    tmp = BACKUP_STORAGE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.chmod(tmp, 0o600)
+    tmp.replace(BACKUP_STORAGE_FILE)
+
+def backup_mount_path(cfg=None):
+    cfg = cfg or load_backup_storage()
+    name = str(cfg.get("mount_name") or "nas").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ValueError("Invalid mount name.")
+    root = BACKUP_MOUNT_ROOT.resolve()
+    target = (BACKUP_MOUNT_ROOT / name).resolve()
+    if target.parent != root:
+        raise ValueError("NAS mount must be directly beneath /mnt/wp-host/.")
+    return target
+
+def backup_credentials_path():
+    return BACKUP_CREDENTIALS_DIR / "nas-smb.credentials"
+
+def nas_is_mounted(cfg=None):
+    try:
+        target = backup_mount_path(cfg)
+        return target.is_dir() and os.path.ismount(target)
+    except Exception:
+        return False
+
+def nas_mount_unit_name(cfg=None):
+    target = backup_mount_path(cfg)
+    return run(["systemd-escape", "--path", "--suffix=mount", str(target)])
+
+def write_nas_mount_unit(cfg, password=None):
+    if cfg.get("type", "smb") != "smb":
+        raise ValueError("Only SMB/CIFS is supported in this version.")
+    server = str(cfg.get("server", "")).strip()
+    share = str(cfg.get("share", "")).strip().strip("/")
+    username = str(cfg.get("username", "")).strip()
+    if not server or not share or not username:
+        raise ValueError("NAS server, share and username are required.")
+    if any(ch in server+share for ch in "\n\r"):
+        raise ValueError("Invalid NAS server or share.")
+    target = backup_mount_path(cfg)
+    target.mkdir(parents=True, exist_ok=True)
+    BACKUP_CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(BACKUP_CREDENTIALS_DIR, 0o700)
+    cred = backup_credentials_path()
+    if password:
+        cred.write_text(f"username={username}\npassword={password}\n")
+        os.chmod(cred, 0o600)
+    elif not cred.exists():
+        raise ValueError("A NAS password is required for the first configuration.")
+    else:
+        lines = cred.read_text().splitlines()
+        saved_pw = next((x.split("=",1)[1] for x in lines if x.startswith("password=")), "")
+        cred.write_text(f"username={username}\npassword={saved_pw}\n")
+        os.chmod(cred, 0o600)
+    unit = nas_mount_unit_name(cfg)
+    unit_path = Path("/etc/systemd/system") / unit
+    content = f"""[Unit]\nDescription=WordPress Host NAS Backup Storage\nAfter=network-online.target\nWants=network-online.target\n\n[Mount]\nWhat=//{server}/{share}\nWhere={target}\nType=cifs\nOptions=credentials={cred},rw,vers=3.0,iocharset=utf8,_netdev,nofail,file_mode=0600,dir_mode=0700\nTimeoutSec=30\n\n[Install]\nWantedBy=multi-user.target\n"""
+    unit_path.write_text(content)
+    os.chmod(unit_path, 0o644)
+    run(["systemctl", "daemon-reload"])
+    run(["systemctl", "enable", unit])
+    return unit
+
+def mount_nas(cfg=None):
+    cfg = cfg or load_backup_storage()
+    unit = nas_mount_unit_name(cfg)
+    run(["systemctl", "restart", unit], timeout=60)
+    if not nas_is_mounted(cfg):
+        raise RuntimeError("systemd started the mount unit but the NAS is not mounted.")
+    return backup_mount_path(cfg)
+
+def unmount_nas(cfg=None):
+    cfg = cfg or load_backup_storage()
+    unit = nas_mount_unit_name(cfg)
+    run(["systemctl", "stop", unit], timeout=60, check=False)
+    return not nas_is_mounted(cfg)
+
+def directory_bytes(path):
+    path = Path(path)
+    if not path.exists(): return 0
+    total = 0
+    for root, dirs, files in os.walk(path):
+        for name in files:
+            try: total += (Path(root)/name).stat().st_size
+            except OSError: pass
+    return total
+
+def backup_sets_for_site(site, root=None):
+    root = Path(root or backup_root())
+    bdir = root / site
+    if not bdir.exists(): return []
+    sets = {}
+    for p in bdir.iterdir():
+        if not p.is_file(): continue
+        m = re.match(r"^(\d{8}-\d{6})(-database\.sql(?:\.gz)?|\.tar\.gz)$", p.name)
+        if not m: continue
+        stamp, suffix = m.groups()
+        row = sets.setdefault(stamp, {"stamp":stamp, "archive":None, "database":None})
+        if suffix == ".tar.gz": row["archive"] = p
+        else: row["database"] = p
+    return [sets[k] for k in sorted(sets, reverse=True)]
+
+def enforce_set_retention(site, root, keep):
+    sets = backup_sets_for_site(site, root)
+    for row in sets[max(1, int(keep)):]:
+        for key in ("archive", "database"):
+            p = row.get(key)
+            if p: p.unlink(missing_ok=True)
+
+def replicate_backup_set_to_nas(site, stamp):
+    cfg = load_backup_storage()
+    if not cfg.get("server") or not nas_is_mounted(cfg):
+        return False, "NAS not configured or mounted"
+    source = backup_root() / site
+    dest = backup_mount_path(cfg) / site
+    dest.mkdir(parents=True, exist_ok=True)
+    candidates = [source/f"{stamp}.tar.gz", source/f"{stamp}-database.sql.gz", source/f"{stamp}-database.sql"]
+    copied = 0
+    for src in candidates:
+        if not src.exists(): continue
+        dst = dest/src.name
+        shutil.copy2(src, dst)
+        if dst.stat().st_size != src.stat().st_size:
+            raise RuntimeError(f"NAS verification failed for {src.name}")
+        copied += 1
+    if copied < 2:
+        return False, "Local backup set is incomplete"
+    enforce_set_retention(site, backup_mount_path(cfg), int(cfg.get("retention",30)))
+    return True, "NAS replication complete"
+
+def nas_status():
+    cfg = load_backup_storage()
+    configured = bool(cfg.get("server") and cfg.get("share"))
+    mounted = nas_is_mounted(cfg) if configured else False
+    free = "-"
+    if mounted:
+        try: free = human_bytes(shutil.disk_usage(backup_mount_path(cfg)).free)
+        except Exception: pass
+    nas = dict(cfg)
+    nas.update({"configured":configured, "mounted":mounted, "mount_point":str(backup_mount_path(cfg)), "free":free, "password_saved":backup_credentials_path().exists()})
+    return nas
+
+
 def enforce_retention(site):
-    bdir = BACKUPS / site
+    bdir = backup_root() / site
     if not bdir.exists(): return
     cutoff = time.time() - BACKUP_RETENTION_DAYS * 86400
     for p in bdir.iterdir():
@@ -2530,7 +2767,7 @@ def list_sites():
         except Exception:
             status, cpu, memory, size, wp_version, ip = "not-created", "-", "-", "-", "-", "-"
 
-        bdir = BACKUPS / site
+        bdir = backup_root() / site
         latest = "-"
         if bdir.exists():
             items = sorted(bdir.glob("*.tar.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
@@ -2579,7 +2816,7 @@ def get_site_summary(site):
     return None
 
 def site_backup_history(site, limit=20):
-    bdir = BACKUPS / site
+    bdir = backup_root() / site
     if not bdir.exists():
         return []
     rows = []
@@ -2849,7 +3086,7 @@ def backup_site(site):
     site_dir = SITES / site
     if not site_dir.exists():
         raise ValueError("Unknown site.")
-    dest = BACKUPS / site
+    dest = backup_root() / site
     dest.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -2871,11 +3108,17 @@ def backup_site(site):
     archive = dest / f"{stamp}.tar.gz"
     run(["tar","-czf",str(archive),"-C",str(site_dir),"wordpress","compose.yml",".env","site.json"], timeout=1200)
     run(["gzip","-f",str(dbfile)])
+    try:
+        ok, detail = replicate_backup_set_to_nas(site, stamp)
+        if load_backup_storage().get("server"):
+            log_action("backup_nas_replication", site, "success" if ok else "warning", detail)
+    except Exception as exc:
+        log_action("backup_nas_replication", site, "failed", str(exc))
     return archive.name
 
 def restore_latest(site):
     site_dir = SITES / site
-    bdir = BACKUPS / site
+    bdir = backup_root() / site
     if not site_dir.exists() or not bdir.exists():
         raise ValueError("Site or backup directory not found.")
     archives = sorted(bdir.glob("*.tar.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
@@ -5512,6 +5755,16 @@ def change_password():
     flash("Your password has been changed.")
     return redirect(url_for("index"))
 
+BACKUP_DESTINATION_HTML = """
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Backup Destination · {{ platform_title }}</title>
+<style>:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--green);margin-top:16px}.tag{display:inline-block;padding:3px 7px;border-radius:6px;background:#17334b;font-size:11px}@media(max-width:700px){table{font-size:12px}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Backup Destination</h1>
+{% with messages = get_flashed_messages() %}{% for m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endwith %}
+<section class="card"><h2>Local Storage Location</h2><p class="muted">Choose which mounted disk stores local backups — your primary array, a second RAID array once built, or any other mounted volume.</p><form method="post" action="/admin/backup-destination"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><table><tr><th></th><th>Mountpoint</th><th>Device</th><th>Filesystem</th><th>Free space</th></tr>{% for d in destinations %}<tr><td><input type="radio" name="mountpoint" value="{{ d.mountpoint }}" {{ 'checked' if d.mountpoint == current_mountpoint else '' }} required style="width:auto"></td><td>{{ d.mountpoint }}{% if d.mountpoint == current_mountpoint %} <span class="tag">current</span>{% endif %}</td><td>{{ d.device }}</td><td>{{ d.fstype }}</td><td>{{ d.free }}</td></tr>{% else %}<tr><td colspan="5">No eligible mounted disks detected.</td></tr>{% endfor %}</table>
+<section class="card"><h2>Network NAS (secondary copy)</h2><p class="muted">Every local backup is copied here automatically once it's created. A NAS outage never blocks or breaks the local backup — it just skips replication until the NAS is back.</p>{% if nas.configured %}<p><b>Status:</b> {% if nas.mounted %}<span class="tag" style="background:#0d3b23;color:#4ade80">CONNECTED</span>{% else %}<span class="tag" style="background:#3b0d0d;color:#fb7185">DISCONNECTED</span>{% endif %} &nbsp; //{{ nas.server }}/{{ nas.share }} → {{ nas.mount_point }} &nbsp; free: {{ nas.free }}</p>{% endif %}<form method="post" action="/admin/backup-destination/nas/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Name<input name="name" value="{{ nas.name or 'Network NAS' }}" maxlength="60"></label><label>NAS address<input name="server" value="{{ nas.server }}" placeholder="192.168.1.20" required></label><label>Share<input name="share" value="{{ nas.share }}" placeholder="WordPressBackups" required></label><label>Username<input name="username" value="{{ nas.username }}" autocomplete="off" required></label><label>Password<input name="password" type="password" placeholder="{{ 'Saved — leave blank to keep current password' if nas.password_saved else 'SMB password' }}" autocomplete="new-password"></label><label>Mount name<input name="mount_name" value="{{ nas.mount_name or 'nas' }}" pattern="[A-Za-z0-9_-]+" required></label><label>NAS retention (backup sets per site)<input name="retention" type="number" min="1" max="365" value="{{ nas.retention or 30 }}"></label><button class="btn" name="mode" value="save_mount">Save &amp; Mount</button> <button class="btn" name="mode" value="save" style="background:var(--blue)">Save Only</button></form>{% if nas.configured %}<div style="margin-top:12px;display:flex;gap:8px"><form method="post" action="/admin/backup-destination/nas/test"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:var(--blue)">Test</button></form><form method="post" action="/admin/backup-destination/nas/mount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Mount / Remount</button></form><form method="post" action="/admin/backup-destination/nas/unmount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#d97706">Unmount</button></form></div>{% endif %}</section>
+<label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px"><input type="checkbox" name="migrate" style="width:auto"> Move existing backups from the current location to the new one</label><button class="btn">Save Destination</button></form></section>
+</div></body></html>
+"""
+
 @APP.get("/admin/email-settings")
 @admin_required
 def email_settings_page_v911():
@@ -5519,6 +5772,118 @@ def email_settings_page_v911():
     password_saved = bool(data.get("smtp_password"))
     view = dict(data); view["smtp_password"] = ""
     return render_template_string(EMAIL_SETTINGS_V911_HTML, e=view, password_saved=password_saved)
+
+@APP.get("/admin/backup-destination")
+@admin_required
+def backup_destination_page():
+    return render_template_string(
+        BACKUP_DESTINATION_HTML,
+        destinations=available_backup_destinations(),
+        current_mountpoint=current_backup_mountpoint(),
+        current_role=current_role(),
+        nas=nas_status(),
+    )
+
+@APP.post("/admin/backup-destination/nas/save")
+@admin_required
+def backup_destination_nas_save():
+    try:
+        cfg = load_backup_storage()
+        cfg.update({
+            "type":"smb",
+            "name":request.form.get("name","Network NAS").strip()[:60] or "Network NAS",
+            "server":request.form.get("server","").strip(),
+            "share":request.form.get("share","").strip().strip("/"),
+            "username":request.form.get("username","").strip(),
+            "mount_name":request.form.get("mount_name","nas").strip(),
+            "retention":max(1,min(365,int(request.form.get("retention","30"))))
+        })
+        backup_mount_path(cfg)
+        password = request.form.get("password","")
+        old_cfg = load_backup_storage()
+        if nas_is_mounted(old_cfg):
+            try: unmount_nas(old_cfg)
+            except Exception: pass
+        write_nas_mount_unit(cfg, password=password or None)
+        save_backup_storage(cfg)
+        if request.form.get("mode") == "save_mount":
+            mount_nas(cfg)
+            flash("NAS configuration saved and mounted successfully.")
+        else:
+            flash("NAS configuration saved.")
+        log_action("backup_nas_config", cfg.get("name","NAS"), "success", f"//{cfg['server']}/{cfg['share']} -> {backup_mount_path(cfg)}")
+    except Exception as exc:
+        log_action("backup_nas_config", "NAS", "failed", str(exc))
+        flash(f"NAS configuration failed: {exc}")
+    return redirect(url_for("backup_destination_page"))
+
+@APP.post("/admin/backup-destination/nas/test")
+@admin_required
+def backup_destination_nas_test():
+    cfg = load_backup_storage()
+    try:
+        if nas_is_mounted(cfg):
+            flash("NAS is currently mounted and reachable.")
+        else:
+            flash("NAS is not currently mounted.")
+    except Exception as exc:
+        flash(f"NAS test failed: {exc}")
+    return redirect(url_for("backup_destination_page"))
+
+@APP.post("/admin/backup-destination/nas/mount")
+@admin_required
+def backup_destination_nas_mount():
+    try:
+        mount_nas()
+        flash("NAS mounted successfully.")
+        log_action("backup_nas_mount", "NAS", "success", "mounted")
+    except Exception as exc:
+        flash(f"Could not mount NAS: {exc}")
+        log_action("backup_nas_mount", "NAS", "failed", str(exc))
+    return redirect(url_for("backup_destination_page"))
+
+@APP.post("/admin/backup-destination/nas/unmount")
+@admin_required
+def backup_destination_nas_unmount():
+    try:
+        unmount_nas()
+        flash("NAS unmounted.")
+        log_action("backup_nas_unmount", "NAS", "success", "unmounted")
+    except Exception as exc:
+        flash(f"Could not unmount NAS: {exc}")
+        log_action("backup_nas_unmount", "NAS", "failed", str(exc))
+    return redirect(url_for("backup_destination_page"))
+
+@APP.post("/admin/backup-destination")
+@admin_required
+def backup_destination_save():
+    try:
+        new_mp = request.form.get("mountpoint", "").strip()
+        migrate = request.form.get("migrate") == "on"
+        valid_mounts = {d["mountpoint"] for d in available_backup_destinations()}
+        if new_mp not in valid_mounts:
+            raise ValueError("Selected location is not currently a mounted filesystem.")
+        old_root = backup_root()
+        save_backup_root_choice(new_mp)
+        new_root = backup_root()
+        new_root.mkdir(parents=True, exist_ok=True)
+        if migrate and old_root.resolve() != new_root.resolve() and old_root.exists():
+            moved = 0
+            for item in old_root.iterdir():
+                target = new_root / item.name
+                if target.exists():
+                    continue
+                shutil.move(str(item), str(target))
+                moved += 1
+            flash(f"Backup destination updated to {new_mp}. Moved {moved} existing site backup folder(s).")
+            log_action("backup_destination_migrate", "system", "success", f"{moved} moved {old_root} -> {new_root}")
+        else:
+            flash(f"Backup destination updated to {new_mp}.")
+        log_action("backup_destination_config", "system", "success", f"local backup root -> {new_root}")
+    except Exception as exc:
+        log_action("backup_destination_config", "system", "failed", str(exc))
+        flash(f"Could not update backup destination: {exc}")
+    return redirect(url_for("backup_destination_page"))
 
 @APP.post("/admin/email-settings")
 @admin_required

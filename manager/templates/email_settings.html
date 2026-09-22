@@ -1,0 +1,957 @@
+<!doctype html>
+<html>
+
+<head>
+
+<meta charset="utf-8">
+
+<meta name="viewport"
+      content="width=device-width,initial-scale=1">
+
+<title>
+Users · {{ platform_title }}
+</title>
+
+<style>
+
+:root {
+    color-scheme: dark;
+
+    --bg: #07111f;
+    --side: #081322;
+    --panel: #0f1b2d;
+    --line: #263850;
+
+    --text: #e7eef8;
+    --muted: #91a3bb;
+
+    --blue: #2563eb;
+    --green: #059669;
+    --orange: #d97706;
+    --red: #dc2626;
+    --purple: #7c3aed;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+
+    background: var(--bg);
+    color: var(--text);
+
+    font-family:
+        Inter,
+        system-ui,
+        Segoe UI,
+        sans-serif;
+}
+
+a {
+    color: #82b6ff;
+    text-decoration: none;
+}
+
+.sidebar {
+    position: fixed;
+
+    inset:
+        0
+        auto
+        0
+        0;
+
+    width: 224px;
+
+    background: var(--side);
+
+    border-right:
+        1px solid
+        var(--line);
+
+    padding:
+        18px
+        14px;
+}
+
+.main {
+    margin-left: 224px;
+}
+
+.brand {
+    margin:
+        6px
+        8px
+        22px;
+
+    font-size: 19px;
+    font-weight: 850;
+}
+
+.brand small {
+    display: block;
+
+    color: var(--muted);
+
+    font-size: 12px;
+}
+
+.nav a {
+    display: block;
+
+    padding:
+        11px
+        12px;
+
+    margin:
+        3px
+        0;
+
+    border-radius: 8px;
+
+    color: #c9d5e5;
+}
+
+.nav a:hover,
+.nav a.active {
+    background: #1d4ed8;
+    color: white;
+}
+
+.top {
+    min-height: 66px;
+
+    border-bottom:
+        1px solid
+        var(--line);
+
+    display: flex;
+
+    align-items: center;
+    justify-content: space-between;
+
+    padding:
+        0
+        22px;
+}
+
+.content {
+    padding: 22px;
+
+    max-width: 1450px;
+}
+
+.card {
+    background: var(--panel);
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius: 12px;
+
+    padding: 19px;
+
+    margin-bottom: 18px;
+}
+
+h1,
+h2 {
+    margin-top: 0;
+}
+
+.muted {
+    color: var(--muted);
+}
+
+.formgrid {
+    display: grid;
+
+    grid-template-columns:
+        1.4fr
+        2fr
+        1fr
+        auto;
+
+    gap: 12px;
+
+    align-items: end;
+}
+
+label {
+    display: block;
+
+    color: #c5d1df;
+
+    font-size: 12px;
+    font-weight: 700;
+}
+
+input,
+select {
+    display: block;
+
+    width: 100%;
+
+    margin-top: 6px;
+
+    padding: 10px;
+
+    background: #091522;
+
+    color: white;
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius: 8px;
+}
+
+.btn {
+    display: inline-block;
+
+    padding:
+        9px
+        12px;
+
+    border: 0;
+    border-radius: 7px;
+
+    color: white;
+
+    font-size: 12px;
+    font-weight: 800;
+
+    cursor: pointer;
+
+    background: #475569;
+}
+
+.blue {
+    background: var(--blue);
+}
+
+.green {
+    background: var(--green);
+}
+
+.orange {
+    background: var(--orange);
+}
+
+.red {
+    background: var(--red);
+}
+
+.purple {
+    background: var(--purple);
+}
+
+table {
+    width: 100%;
+
+    border-collapse: collapse;
+
+    font-size: 13px;
+}
+
+th,
+td {
+    padding:
+        11px
+        9px;
+
+    border-bottom:
+        1px solid
+        var(--line);
+
+    text-align: left;
+    vertical-align: middle;
+}
+
+th {
+    color: #93c5fd;
+}
+
+.good {
+    color: #4ade80;
+    font-weight: 800;
+}
+
+.bad {
+    color: #fb7185;
+    font-weight: 800;
+}
+
+.warn {
+    color: #fbbf24;
+    font-weight: 800;
+}
+
+.actions {
+    display: flex;
+
+    gap: 6px;
+
+    flex-wrap: wrap;
+
+    align-items: center;
+}
+
+.actions form {
+    margin: 0;
+}
+
+.flash {
+    padding:
+        10px
+        12px;
+
+    margin-bottom: 10px;
+
+    background: #162941;
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius: 8px;
+}
+
+.pill {
+    display: inline-block;
+
+    padding:
+        4px
+        8px;
+
+    border-radius: 7px;
+
+    background: #17263b;
+
+    font-size: 11px;
+}
+
+.smallinput {
+    min-width: 180px;
+}
+
+@media(max-width:1050px) {
+
+    .sidebar {
+        display: none;
+    }
+
+    .main {
+        margin-left: 0;
+    }
+
+    .formgrid {
+        grid-template-columns: 1fr;
+    }
+
+    .content {
+        padding: 12px;
+    }
+
+}
+
+</style>
+
+</head>
+
+
+<body>
+
+
+<aside class="sidebar">
+
+<div class="brand">
+
+{{ platform_name }}
+
+<small>
+Hosting Manager
+</small>
+
+</div>
+
+
+<nav class="nav">
+
+<a href="/">
+⌂ Dashboard
+</a>
+
+<a href="/sites">
+▦ Sites
+</a>
+
+<a href="/alerts">
+⚠ Alerts
+</a>
+
+<a class="active"
+   href="/users">
+♟ Users
+</a>
+
+<a href="/admin/email-settings">
+✉ Email Settings
+</a>
+
+<a href="/account/security">
+🔐 My Security
+</a>
+
+<a href="/#system">
+⚙ System
+</a>
+
+<a href="/#logs">
+▤ Logs
+</a>
+
+</nav>
+
+</aside>
+
+
+<div class="main">
+
+
+<header class="top">
+
+<div>
+
+<h1>
+Users
+</h1>
+
+<div class="muted">
+Platform user and authentication management
+</div>
+
+</div>
+
+
+<div>
+
+<a class="btn blue"
+   href="/account/security">
+
+My Security
+
+</a>
+
+&nbsp;
+
+<a class="btn"
+   href="/">
+
+Dashboard
+
+</a>
+
+</div>
+
+</header>
+
+
+<main class="content">
+
+
+{% with messages = get_flashed_messages() %}
+
+{% for m in messages %}
+
+<div class="flash">
+{{ m }}
+</div>
+
+{% endfor %}
+
+{% endwith %}
+
+
+<section class="card">
+
+<h2>
+Create User
+</h2>
+
+<p class="muted">
+
+A secure temporary password will be generated automatically
+and emailed to the user.
+
+The user will be required to change it after first login.
+
+</p>
+
+
+<form method="post"
+      action="/users/create">
+
+
+<input type="hidden"
+       name="csrf_token"
+       value="{{ csrf_token() }}">
+
+
+<div class="formgrid">
+
+
+<label>
+
+Username
+
+<input
+    name="username"
+    required
+    minlength="3"
+    maxlength="40"
+    autocomplete="off"
+    placeholder="jsmith">
+
+</label>
+
+
+<label>
+
+Email Address
+
+<input
+    name="email"
+    type="email"
+    required
+    placeholder="jsmith@example.com">
+
+</label>
+
+
+<label>
+
+Role
+
+<select name="role">
+
+<option value="user">
+User / Operator
+</option>
+
+<option value="view">
+View Only
+</option>
+
+<option value="admin">
+Admin
+</option>
+
+</select>
+
+</label>
+
+
+<button
+    class="btn green"
+    type="submit">
+
+＋ Create User
+
+</button>
+
+
+</div>
+
+</form>
+
+</section>
+
+
+
+<section class="card">
+
+<h2>
+Dashboard Users
+</h2>
+
+
+<table>
+
+
+<thead>
+
+<tr>
+
+<th>
+Username
+</th>
+
+<th>
+Email
+</th>
+
+<th>
+Role
+</th>
+
+<th>
+Status
+</th>
+
+<th>
+MFA
+</th>
+
+<th>
+Password
+</th>
+
+<th>
+Created
+</th>
+
+<th>
+Actions
+</th>
+
+</tr>
+
+</thead>
+
+
+<tbody>
+
+
+{% for u in users %}
+
+
+<tr>
+
+
+<td>
+
+<strong>
+{{ u.username }}
+</strong>
+
+{% if u.username == current_user %}
+
+<span class="pill">
+You
+</span>
+
+{% endif %}
+
+</td>
+
+
+
+<td>
+
+{% if u.email %}
+
+{{ u.email }}
+
+{% else %}
+
+<span class="warn">
+Email required
+</span>
+
+{% endif %}
+
+</td>
+
+
+
+<td>
+
+{{ u.role|title }}
+
+</td>
+
+
+
+<td>
+
+{% if u.enabled %}
+
+<span class="good">
+Enabled
+</span>
+
+{% else %}
+
+<span class="bad">
+Disabled
+</span>
+
+{% endif %}
+
+</td>
+
+
+
+<td>
+
+{% if u.mfa_enabled %}
+
+<span class="good">
+✓ Enabled
+</span>
+
+{% else %}
+
+<span class="warn">
+Not Enabled
+</span>
+
+{% endif %}
+
+</td>
+
+
+
+<td>
+
+{% if u.force_password_change %}
+
+<span class="warn">
+Change Required
+</span>
+
+{% else %}
+
+<span class="good">
+Current
+</span>
+
+{% endif %}
+
+</td>
+
+
+
+<td>
+
+{{ u.created or "-" }}
+
+</td>
+
+
+
+<td>
+
+
+<div class="actions">
+
+
+<form method="post"
+      action="/users/{{ u.username }}/update">
+
+<input type="hidden"
+       name="csrf_token"
+       value="{{ csrf_token() }}">
+
+<input
+    class="smallinput"
+    name="email"
+    type="email"
+    value="{{ u.email }}"
+    placeholder="Email">
+
+<input type="hidden"
+       name="role"
+       value="{{ u.role }}">
+
+<button
+    class="btn blue"
+    type="submit">
+
+Save Email
+
+</button>
+
+</form>
+
+
+
+<form method="post"
+      action="/users/{{ u.username }}/reset-password">
+
+<input type="hidden"
+       name="csrf_token"
+       value="{{ csrf_token() }}">
+
+<button
+    class="btn purple"
+    type="submit">
+
+Reset Password
+
+</button>
+
+</form>
+
+
+
+{% if u.mfa_enabled %}
+
+<form method="post"
+      action="/users/{{ u.username }}/reset-mfa"
+      onsubmit="return confirm(
+          'Reset MFA for {{ u.username }}?'
+      );">
+
+<input type="hidden"
+       name="csrf_token"
+       value="{{ csrf_token() }}">
+
+<button
+    class="btn orange"
+    type="submit">
+
+Reset MFA
+
+</button>
+
+</form>
+
+{% endif %}
+
+
+
+{% if u.username != current_user %}
+
+
+<form method="post"
+      action="/users/{{ u.username }}/toggle">
+
+<input type="hidden"
+       name="csrf_token"
+       value="{{ csrf_token() }}">
+
+<button
+    class="btn {{ 'orange' if u.enabled else 'green' }}"
+    type="submit">
+
+{{ 'Disable' if u.enabled else 'Enable' }}
+
+</button>
+
+</form>
+
+
+
+<form method="post"
+      action="/users/{{ u.username }}/delete"
+      onsubmit="return confirm(
+          'Permanently delete {{ u.username }}?'
+      );">
+
+<input type="hidden"
+       name="csrf_token"
+       value="{{ csrf_token() }}">
+
+<button
+    class="btn red"
+    type="submit">
+
+Delete
+
+</button>
+
+</form>
+
+
+{% endif %}
+
+
+</div>
+
+
+</td>
+
+
+</tr>
+
+
+{% else %}
+
+
+<tr>
+
+<td colspan="8">
+
+No users found.
+
+</td>
+
+</tr>
+
+
+{% endfor %}
+
+
+</tbody>
+
+
+</table>
+
+
+</section>
+
+
+<section class="card">
+
+<h2>
+Authentication Workflow
+</h2>
+
+<p class="muted">
+
+New user → Temporary password emailed →
+Password change required →
+Authenticator enrolment →
+Normal login.
+
+</p>
+
+<p>
+
+<a href="/admin/email-settings">
+Configure / test SMTP
+</a>
+
+&nbsp; · &nbsp;
+
+<a href="/account/security">
+Manage your MFA
+</a>
+
+&nbsp; · &nbsp;
+
+<a href="/forgot-password">
+Test Forgot Password
+</a>
+
+</p>
+
+</section>
+
+
+</main>
+
+
+</div>
+
+
+</body>
+
+</html>
+

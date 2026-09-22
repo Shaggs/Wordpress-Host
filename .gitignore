@@ -1,0 +1,21 @@
+# Generated at install time — contains secrets
+manager/manager.env
+
+# Runtime state — per-deployment, not source
+manager/local-backup-destination.json
+manager/backup-storage.json
+sites/
+backups/
+nginx-proxy-manager/
+docker-data/
+
+# NAS credentials — never commit
+/etc/wp-host/credentials/
+
+# Python
+__pycache__/
+*.pyc
+*.bak.*
+
+# venv
+manager/venv/
