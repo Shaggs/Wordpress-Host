@@ -1,5 +1,10 @@
 # Changelog
 
+## 9.8.0
+- Fixed maintenance mode blocking wp-admin for everyone, including admins: the .htaccess rules now exclude /wp-admin, /wp-login.php, /wp-cron.php, and the /wp-includes and /wp-content asset directories wp-admin depends on, so visitors still see the maintenance page while admin access keeps working normally.
+- Fixed the site page's "Maintenance", "Stop", and "Quarantine" buttons getting stuck on their original label with no way to reverse the action from the same panel. Each now toggles to its opposite action once applied: Maintenance -> Return Live, Stop Site -> Start Site, Quarantine -> Restore Access.
+- Retains all V9.7 shared-theme-stylesheet, V9.6 theming/KPI-fix, V9.5 backup-destination/NAS, V9.4 temporary access, V9.3 port allocation and V9.2 authentication/MFA/SMTP functionality.
+
 ## 9.7.0
 - Extracted the four colour themes (Midnight/Light/Forest/Sunset) into a single shared stylesheet (manager/static/theme.css) instead of duplicating the variable blocks inside every page's inline <style> tag.
 - Extended the per-user colour theme to every authenticated page: Sites, Site detail, Alerts, Users, Account Security, Email Settings, and Backup Destination now all follow the selected theme, not just the Dashboard.

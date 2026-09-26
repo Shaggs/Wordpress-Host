@@ -358,10 +358,10 @@ SITE_HTML = r"""
 {% endif %}
 </div></div>
 {% if current_role in ['admin','user'] %}<div class="morewrap" id="moreWrap"><button class="btn" type="button" onclick="document.getElementById('moreWrap').classList.toggle('open')">More ⋯</button><div class="morepanel">
-<div class="moreitem"><b class="warn">Maintenance</b><p>Show a maintenance page while keeping the site online.</p><form method="post" action="/site-mode/{{ site.site }}/maintenance"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Maintenance</button></form></div>
+<div class="moreitem">{% if site.mode == 'maintenance' %}<b class="good">Maintenance Active</b><p>Visitors see the maintenance page. wp-admin remains accessible to you.</p><form method="post" action="/site-mode/{{ site.site }}/live"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Return Live</button></form>{% else %}<b class="warn">Maintenance</b><p>Show a maintenance page while keeping the site online.</p><form method="post" action="/site-mode/{{ site.site }}/maintenance"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Maintenance</button></form>{% endif %}</div>
 <div class="moreitem"><b>Staging</b><p>Create an isolated WordPress and database clone.</p><form method="post" action="/staging-clone/{{ site.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Clone</button></form></div>
-<div class="moreitem"><b class="bad">Quarantine</b><p>Immediately remove this WordPress container from public proxy access.</p><form method="post" action="/site-mode/{{ site.site }}/quarantine"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Quarantine</button></form></div>
-<div class="moreitem"><b>Stop</b><p>Stop the WordPress container.</p><form method="post" action="/action/{{ site.site }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Stop Site</button></form></div>
+<div class="moreitem">{% if site.mode == 'quarantine' %}<b class="good">Quarantined</b><p>This site is disconnected from the proxy - not publicly reachable.</p><form method="post" action="/site-mode/{{ site.site }}/live"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Restore Access</button></form>{% else %}<b class="bad">Quarantine</b><p>Immediately remove this WordPress container from public proxy access.</p><form method="post" action="/site-mode/{{ site.site }}/quarantine"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Quarantine</button></form>{% endif %}</div>
+<div class="moreitem">{% if site.status == 'running' %}<b>Stop</b><p>Stop the WordPress container.</p><form method="post" action="/action/{{ site.site }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Stop Site</button></form>{% else %}<b class="good">Start</b><p>Start the stopped WordPress container.</p><form method="post" action="/action/{{ site.site }}/start"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Start Site</button></form>{% endif %}</div>
 <div class="moreitem"><b class="bad">Delete</b><p>Delete the site containers and associated site record.</p><form method="post" action="/action/{{ site.site }}/delete" onsubmit="return confirm('Delete {{ site.site }}?')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Delete</button></form></div>
 </div></div>{% endif %}
 </section>
@@ -5568,6 +5568,11 @@ main{max-width:620px;padding:42px;background:#0f1b2d;border-radius:16px;text-ali
         block = """# BEGIN WP-HOST-MAINTENANCE
 RewriteEngine On
 RewriteCond %{REQUEST_URI} !^/\\.maintenance-platform\\.html$
+RewriteCond %{REQUEST_URI} !^/wp-admin
+RewriteCond %{REQUEST_URI} !^/wp-login\\.php
+RewriteCond %{REQUEST_URI} !^/wp-cron\\.php
+RewriteCond %{REQUEST_URI} !^/wp-includes
+RewriteCond %{REQUEST_URI} !^/wp-content
 RewriteRule ^.*$ /.maintenance-platform.html [R=302,L]
 # END WP-HOST-MAINTENANCE
 """
