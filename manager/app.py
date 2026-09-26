@@ -33,6 +33,7 @@ from flask import (
     render_template_string, session, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 from flask_wtf.csrf import CSRFProtect
 import psutil
 import requests
@@ -379,7 +380,7 @@ SITE_HTML = r"""
 <section class="tabpane" id="tab-themes"><div class="card"><h3>Themes</h3><table class="table"><tr><th>Theme</th><th>Version</th></tr>{% for p in runtime.theme_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No theme inventory available.</td></tr>{% endfor %}</table></div></section>
 <section class="tabpane" id="tab-database"><div class="card"><h3>Database</h3><p>Database host: <b>{{ runtime.db_host }}</b></p><p>Database name: <b>{{ runtime.db_name }}</b></p><p>Database user: <b>{{ runtime.db_user }}</b></p>{% if current_role in ['admin','user'] %}{% if pma_access.open %}<a class="btn green" target="_blank" rel="noopener" href="http://{{ manager_public_host }}:{{ site.phpmyadmin_port }}">Open phpMyAdmin ↗</a> <form method="post" action="/access/{{ site.site }}/phpmyadmin/close" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Close Firewall</button></form>{% else %}<form method="post" target="_blank" action="/access/{{ site.site }}/phpmyadmin/open/30"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="source_ip" value="{{ client_ip }}"><input type="hidden" name="launch" value="1"><button class="btn">Open phpMyAdmin for 30m ↗</button></form>{% endif %}{% endif %}</div></section>
 <section class="tabpane" id="tab-logs"><div class="card"><h3>Site Audit Log</h3><table class="table"><tr><th>Time (Adelaide)</th><th>User</th><th>Action</th><th>Result</th><th>Detail</th></tr>{% for x in audits %}<tr><td>{{ x.timestamp }}</td><td>{{ x.username }}</td><td>{{ x.action }}</td><td>{{ x.result }}</td><td>{{ x.detail }}</td></tr>{% else %}<tr><td colspan="5">No site-specific audit events.</td></tr>{% endfor %}</table></div></section>
-<section class="tabpane" id="tab-security"><div class="card"><h3>Security</h3><p>WordPress core checksums: <b class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</b></p><table class="table"><tr><th>Severity</th><th>Finding</th><th>Path</th><th>Last Seen (Adelaide)</th></tr>{% for f in findings %}<tr><td>{{ f.severity }}</td><td>{{ f.message }}</td><td>{{ f.path }}</td><td>{{ f.last_seen }}</td></tr>{% else %}<tr><td colspan="4">No active security findings.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-security"><div class="card"><h3>Security</h3><p>WordPress core checksums: <b class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</b></p><table class="table"><tr><th>Severity</th><th>Finding</th><th>Path</th><th>Last Seen (Adelaide)</th></tr>{% for f in findings %}<tr><td>{{ f.severity }}</td><td>{{ f.message }}</td><td>{{ f.path }}</td><td>{{ f.last_seen }}</td></tr>{% else %}<tr><td colspan="4">No active security findings.</td></tr>{% endfor %}</table></div><div class="card"><h3>Version &amp; Vulnerability Scan</h3>{% if not vuln_scan %}<p class="muted">No scan has run yet. This runs automatically after each migration.</p>{% else %}<p class="muted">Checked {{ vuln_scan.checked_at }}</p><table class="table"><tr><th>Component</th><th>Installed</th><th>Latest</th><th>Status</th></tr>{% if vuln_scan.core %}<tr><td>{{ vuln_scan.core.name }}</td><td>{{ vuln_scan.core.installed }}</td><td>{{ vuln_scan.core.latest or '-' }}</td><td>{% if vuln_scan.core.outdated %}<span class="bad">Outdated</span>{% elif vuln_scan.core.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endif %}{% for p in vuln_scan.plugins %}<tr><td>{{ p.name }} (plugin)</td><td>{{ p.installed or '-' }}</td><td>{{ p.latest or '-' }}</td><td>{% if p.outdated %}<span class="bad">Outdated</span>{% elif p.closed %}<span class="bad">Closed on wp.org</span>{% elif p.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif p.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}{% for t in vuln_scan.themes %}<tr><td>{{ t.name }} (theme)</td><td>{{ t.installed or '-' }}</td><td>{{ t.latest or '-' }}</td><td>{% if t.outdated %}<span class="bad">Outdated</span>{% elif t.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif t.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</div></section>
 {% if site.sftp_enabled %}<section class="card" style="margin-top:16px"><h3>SFTP Access</h3><div class="row"><span>Status</span><b class="good">ENABLED</b></div><div class="row"><span>Host</span><b>{{ manager_public_host }}</b></div><div class="row"><span>Allocated Port</span><b>{{ site.sftp_port }}</b></div><div class="row"><span>Username</span><b>wordpress</b></div><div class="row"><span>Protocol</span><b>SFTP / SSH</b></div><p class="muted">Use the allocated port shown above. The password is shown only when SFTP is enabled/reset. Use SFTP, not FTP/FTPS.</p></section>{% endif %}
 <section class="tabpane" id="tab-migration">
 <div class="card">
@@ -390,6 +391,7 @@ SITE_HTML = r"""
 <table class="table"><tr><th>File</th><th>Type</th><th>Size</th><th>Modified (Adelaide)</th></tr>
 {% for f in migration_files %}<tr><td>{{ f.name }}</td><td>{{ f.kind }}</td><td>{{ f.size }}</td><td>{{ f.modified }}</td></tr>
 {% else %}<tr><td colspan="4">No ZIP/SQL source files detected. Files placed in the site's WordPress/SFTP upload folder are detected automatically.</td></tr>{% endfor %}</table>
+{% if current_role in ['admin','user'] %}<form method="post" action="/site/{{ site.site }}/migration-source/upload" enctype="multipart/form-data" style="margin:14px 0"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Upload source files (.zip, .sql, .sql.gz)<br><input type="file" name="files" multiple accept=".zip,.sql,.gz"></label><button class="btn" type="submit" style="margin-top:8px">Upload</button></form>{% endif %}
 {% if current_role in ['admin','user'] %}
 <form method="post" action="/site/{{ site.site }}/migrate" onsubmit="return confirm('This replaces the live WordPress files and recreates/imports the site database after taking a rollback backup. Continue?')">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -2461,6 +2463,119 @@ def plugin_theme_inventory(site):
         code="require '/var/www/html/wp-load.php';require_once ABSPATH.'wp-admin/includes/plugin.php';$p=get_plugins();foreach($p as $k=>$v){echo 'PLUGIN|'.$k.'|'.($v['Version']??'').'\\n';}$ts=wp_get_themes();foreach($ts as $k=>$v){echo 'THEME|'.$k.'|'.$v->get('Version').'\\n';}"
         return c.exec_run(["php","-r",code]).output.decode(errors="ignore")
     except Exception as e:return str(e)
+
+def check_outdated_components(site):
+    """Check installed WordPress core, plugin and theme versions against
+    the latest available on wordpress.org. Runs synchronously after each
+    migration; results are saved to a per-site JSON file and shown in a
+    dedicated section on the site page, separate from the ongoing
+    baseline-based security findings."""
+    result = {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "core": None,
+        "plugins": [],
+        "themes": [],
+        "error": None,
+    }
+    try:
+        versions = wp_versions(site)
+        core_version = versions.get("core") or "-"
+
+        inv_raw = plugin_theme_inventory(site)
+        plugins, themes = {}, {}
+        for line in inv_raw.splitlines():
+            parts = line.split("|")
+            if len(parts) >= 3 and parts[0] == "PLUGIN":
+                plugins[parts[1]] = parts[2]
+            elif len(parts) >= 3 and parts[0] == "THEME":
+                themes[parts[1]] = parts[2]
+
+        if core_version and core_version != "-":
+            try:
+                r = requests.get("https://api.wordpress.org/core/version-check/1.7/", timeout=15)
+                latest = r.json()["offers"][0]["current"]
+                result["core"] = {
+                    "name": "WordPress",
+                    "installed": core_version,
+                    "latest": latest,
+                    "outdated": vuln_version_tuple(core_version) < vuln_version_tuple(latest),
+                }
+            except Exception as e:
+                result["core"] = {"name": "WordPress", "installed": core_version, "latest": None, "error": str(e)}
+
+        for slug, installed in plugins.items():
+            plugin_slug = slug.split("/")[0].replace(".php", "")
+            entry = {"name": plugin_slug, "installed": installed, "latest": None,
+                     "outdated": False, "not_on_repo": False, "closed": False}
+            try:
+                r = requests.get(
+                    "https://api.wordpress.org/plugins/info/1.2/",
+                    params={"action": "plugin_information", "request[slug]": plugin_slug},
+                    timeout=15,
+                )
+                info = r.json()
+                if not info or "error" in (info or {}):
+                    entry["not_on_repo"] = True
+                else:
+                    latest = info.get("version")
+                    entry["latest"] = latest
+                    entry["closed"] = bool(info.get("closed") or info.get("status") == "closed")
+                    if installed and latest:
+                        entry["outdated"] = vuln_version_tuple(installed) < vuln_version_tuple(latest)
+            except Exception as e:
+                entry["error"] = str(e)
+            result["plugins"].append(entry)
+
+        for slug, installed in themes.items():
+            entry = {"name": slug, "installed": installed, "latest": None,
+                     "outdated": False, "not_on_repo": False}
+            try:
+                r = requests.get(
+                    "https://api.wordpress.org/themes/info/1.2/",
+                    params={"action": "theme_information", "request[slug]": slug},
+                    timeout=15,
+                )
+                info = r.json()
+                if not info or "error" in (info or {}):
+                    entry["not_on_repo"] = True
+                else:
+                    latest = info.get("version")
+                    entry["latest"] = latest
+                    if installed and latest:
+                        entry["outdated"] = vuln_version_tuple(installed) < vuln_version_tuple(latest)
+            except Exception as e:
+                entry["error"] = str(e)
+            result["themes"].append(entry)
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    save_vuln_scan_report(site, result)
+    return result
+
+
+def vuln_version_tuple(v):
+    nums = [int(x) for x in re.findall(r"\d+", v or "")][:4]
+    return tuple(nums + [0] * (4 - len(nums)))
+
+
+def vuln_scan_path(site):
+    return SITES / site / "vuln-scan.json"
+
+def save_vuln_scan_report(site, report):
+    try:
+        vuln_scan_path(site).write_text(json.dumps(report, indent=2))
+    except Exception:
+        pass
+
+def load_vuln_scan_report(site):
+    p = vuln_scan_path(site)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return None
 
 def operational_monitor_loop():
     while True:
@@ -5201,6 +5316,7 @@ def site_dashboard(site):
         findings=site_security_findings(site),
         migration_files=migration_engine.source_files(site),
         migration_report=migration_engine.load_report(site),
+        vuln_scan=load_vuln_scan_report(site),
         audits=audits[:100],
         host_only=request.host.split(":")[0],
         manager_public_host=request.host.split(":")[0],
@@ -5213,6 +5329,33 @@ def site_dashboard(site):
         client_ip=detected_client_ip(),
         ufw=ufw_status(),
     )
+
+@APP.post("/site/<site>/migration-source/upload")
+@operator_required
+def migration_source_upload(site):
+    if not SITE_RE.match(site) or not (SITES / site).exists():
+        abort(404)
+    dest = migration_engine.source_dir(site)
+    uploaded = request.files.getlist("files")
+    saved, rejected = [], []
+    for f in uploaded:
+        if not f or not f.filename:
+            continue
+        name = secure_filename(f.filename)
+        low = name.lower()
+        if not (low.endswith(".zip") or low.endswith(".sql") or low.endswith(".sql.gz")):
+            rejected.append(f.filename)
+            continue
+        f.save(dest / name)
+        saved.append(name)
+    if saved:
+        flash(f"{site}: uploaded {', '.join(saved)}.")
+    if rejected:
+        flash(f"{site}: rejected (unsupported type): {', '.join(rejected)}. Only .zip, .sql, .sql.gz are accepted.")
+    if not saved and not rejected:
+        flash(f"{site}: no files were selected.")
+    log_action("migration_source_upload", site, "success" if saved else "failed", f"saved={saved} rejected={rejected}")
+    return redirect(url_for("site_dashboard", site=site) + "#migration")
 
 @APP.post("/site/<site>/migrate")
 @operator_required
@@ -5228,6 +5371,16 @@ def migrate_site_route(site):
             migration_engine.save_report(site, report)
         except Exception as sec_exc:
             report.setdefault("steps", []).append({"name":"Security scan","ok":False,"detail":str(sec_exc)})
+            migration_engine.save_report(site, report)
+        try:
+            vuln = check_outdated_components(site)
+            outdated = (sum(1 for p in vuln.get("plugins", []) if p.get("outdated"))
+                        + sum(1 for t in vuln.get("themes", []) if t.get("outdated"))
+                        + (1 if (vuln.get("core") or {}).get("outdated") else 0))
+            report.setdefault("steps", []).append({"name":"Vulnerability scan","ok":True,"detail":f"{outdated} outdated component(s)"})
+            migration_engine.save_report(site, report)
+        except Exception as vuln_exc:
+            report.setdefault("steps", []).append({"name":"Vulnerability scan","ok":False,"detail":str(vuln_exc)})
             migration_engine.save_report(site, report)
         log_action("site_migration", site, report.get("status", "success"), f"{report.get('zip')} + {report.get('sql')}")
         if report.get("status") == "success":

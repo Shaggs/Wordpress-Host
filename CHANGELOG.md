@@ -1,5 +1,10 @@
 # Changelog
 
+## 9.9.0
+- Added automatic version/vulnerability scanning after every migration: installed WordPress core, plugin and theme versions are checked against the latest available on wordpress.org, with results shown in a dedicated section on the site page's Security tab (separate from the ongoing baseline-based findings). Correctly distinguishes outdated components, plugins closed on wordpress.org, and custom/premium components not hosted there.
+- Added a web-based upload button for migration source files (.zip, .sql, .sql.gz) on the site page's Migration tab, since the SFTP jail is scoped to the wordpress/ folder and cannot reach the protected migration-source directory. Filenames are sanitised to prevent path traversal.
+- Retains all V9.8 maintenance-mode admin bypass and site action button toggles, V9.7 shared-theme-stylesheet, V9.6 theming/KPI-fix, V9.5 backup-destination/NAS, V9.4 temporary access, V9.3 port allocation and V9.2 authentication/MFA/SMTP functionality.
+
 ## 9.8.0
 - Fixed maintenance mode blocking wp-admin for everyone, including admins: the .htaccess rules now exclude /wp-admin, /wp-login.php, /wp-cron.php, and the /wp-includes and /wp-content asset directories wp-admin depends on, so visitors still see the maintenance page while admin access keeps working normally.
 - Fixed the site page's "Maintenance", "Stop", and "Quarantine" buttons getting stuck on their original label with no way to reverse the action from the same panel. Each now toggles to its opposite action once applied: Maintenance -> Return Live, Stop Site -> Start Site, Quarantine -> Restore Access.
