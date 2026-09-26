@@ -1,5 +1,11 @@
 # Changelog
 
+## 9.7.0
+- Extracted the four colour themes (Midnight/Light/Forest/Sunset) into a single shared stylesheet (manager/static/theme.css) instead of duplicating the variable blocks inside every page's inline <style> tag.
+- Extended the per-user colour theme to every authenticated page: Sites, Site detail, Alerts, Users, Account Security, Email Settings, and Backup Destination now all follow the selected theme, not just the Dashboard.
+- Fixed hardcoded dark-background/white-text elements on these pages (search boxes, sidebar nav links, input/textarea fields) that previously stayed fixed regardless of the selected theme.
+- Retains all V9.6 theming/KPI-fix, V9.5 backup-destination/NAS, V9.4 temporary access, V9.3 port allocation and V9.2 authentication/MFA/SMTP functionality.
+
 ## 9.6.0
 - Added a per-disk usage table to the dashboard's System section, listing every mounted filesystem (device, mountpoint, filesystem type, used/total/free, percentage).
 - Fixed KPI card spacing on the dashboard (label and description text were running together on one line).

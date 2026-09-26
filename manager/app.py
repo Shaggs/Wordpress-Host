@@ -172,23 +172,24 @@ button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;backgr
 """
 
 EMAIL_SETTINGS_V911_HTML = r"""
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Email Settings · {{ platform_title }}</title>
-<style>:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}label{display:block;font-weight:700;margin-top:14px}input,select{width:100%;padding:10px;margin-top:5px;background:#091522;border:1px solid var(--line);border-radius:8px;color:#fff}.grid{display:grid;grid-template-columns:2fr 1fr;gap:12px}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--blue);margin-top:16px}.green{background:var(--green)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Email Settings</h1>
+<!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Email Settings · {{ platform_title }}</title>
+<link rel="stylesheet" href="/static/theme.css">
+<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}label{display:block;font-weight:700;margin-top:14px}input,select{width:100%;padding:10px;margin-top:5px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}.grid{display:grid;grid-template-columns:2fr 1fr;gap:12px}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--blue);margin-top:16px}.green{background:var(--green)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Email Settings</h1>
 {% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}
 <section class="card"><h2>SMTP</h2><p class="muted">Shared by platform alerts, new-user temporary passwords and password recovery.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="save"><div class="grid"><label>SMTP Host<input name="smtp_host" value="{{e.smtp_host}}"></label><label>Port<input name="smtp_port" type="number" value="{{e.smtp_port}}"></label></div><label>Username<input name="smtp_username" value="{{e.smtp_username}}"></label><label>Password<input name="smtp_password" type="password" placeholder="{{'Saved — leave blank to keep current password' if password_saved else 'SMTP password'}}"></label><label>From Address<input name="from_email" type="email" value="{{e.from_email}}"></label><label>Security<select name="security"><option value="starttls" {% if e.security=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if e.security=='ssl' %}selected{% endif %}>SSL/TLS</option><option value="none" {% if e.security=='none' %}selected{% endif %}>None</option></select></label><h3>Platform Alerts</h3><label><input style="width:auto" type="checkbox" name="enabled" {% if e.enabled %}checked{% endif %}> Enable alert emails</label><label>Alert Recipients<input name="recipients" value="{{e.recipients}}"></label><div class="grid"><label>Health check minutes<input name="check_minutes" type="number" min="1" max="60" value="{{e.check_minutes}}"></label><label>Failure threshold<input name="failure_threshold" type="number" min="1" max="10" value="{{e.failure_threshold}}"></label></div><label><input style="width:auto" type="checkbox" name="send_recovery" {% if e.send_recovery %}checked{% endif %}> Send recovery notifications</label><button class="btn">Save Email Settings</button></form></section><section class="card"><h2>Test SMTP</h2><p class="muted">Save settings first. The test is sent to the Alert Recipients above.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="test">{% for name in ['smtp_host','smtp_port','smtp_username','from_email','recipients','security','check_minutes','failure_threshold'] %}<input type="hidden" name="{{name}}" value="{{e[name]}}">{% endfor %}{% if e.enabled %}<input type="hidden" name="enabled" value="on">{% endif %}{% if e.send_recovery %}<input type="hidden" name="send_recovery" value="on">{% endif %}<button class="btn green">Send Test Email</button></form></section></div></body></html>
 """
 
 ALERTS_HTML = r"""
 <!doctype html>
-<html>
+<html data-theme="{{ current_theme }}">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Security Alerts · {{ platform_title }}</title>
+<link rel="stylesheet" href="/static/theme.css">
 <style>
-:root{color-scheme:dark;--bg:#07111f;--side:#081322;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
-.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.content{margin-left:224px;padding:22px}.brand{font-size:20px;font-weight:800;margin-bottom:22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:#c9d5e5}.nav a.active{background:#1d4ed8;color:white}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:14px}.head{display:flex;align-items:center;justify-content:space-between;gap:12px}.badge{padding:5px 8px;border-radius:6px;font-size:11px;font-weight:800}.CRITICAL{background:rgba(220,38,38,.2);color:#fb7185}.HIGH{background:rgba(217,119,6,.2);color:#fbbf24}.MEDIUM{background:rgba(37,99,235,.2);color:#93c5fd}.muted{color:var(--muted);font-size:12px}.btn{border:0;border-radius:7px;color:#fff;padding:8px 11px;background:#2563eb;font-weight:700;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:12px}.field{background:#0b1727;border:1px solid var(--line);border-radius:8px;padding:10px}.field b{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.content{margin-left:224px;padding:22px}.brand{font-size:20px;font-weight:800;margin-bottom:22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a.active{background:#1d4ed8;color:white}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:14px}.head{display:flex;align-items:center;justify-content:space-between;gap:12px}.badge{padding:5px 8px;border-radius:6px;font-size:11px;font-weight:800}.CRITICAL{background:rgba(220,38,38,.2);color:#fb7185}.HIGH{background:rgba(217,119,6,.2);color:#fbbf24}.MEDIUM{background:rgba(37,99,235,.2);color:#93c5fd}.muted{color:var(--muted);font-size:12px}.btn{border:0;border-radius:7px;color:#fff;padding:8px 11px;background:#2563eb;font-weight:700;cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:12px}.field{background:var(--field);border:1px solid var(--line);border-radius:8px;padding:10px}.field b{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
 </style>
 </head>
 <body>
@@ -272,13 +273,13 @@ HTML = r"""
 """
 
 SITES_HTML = r"""
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sites · WP Host Manager</title>
+<link rel="stylesheet" href="/static/theme.css">
 <style>
-:root{color-scheme:dark;--bg:#07111f;--side:#081322;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
-.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:19px;font-weight:850;margin:6px 8px 22px}.brand small{display:block;color:var(--muted);font-size:12px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:#c9d5e5}.nav a.active,.nav a:hover{background:#1d4ed8;color:#fff}
-.main{margin-left:224px;min-height:100vh}.top{height:66px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px}.top h1{margin:0;font-size:22px}.content{padding:22px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}.search{width:min(360px,45vw);background:#0b1727;border:1px solid var(--line);border-radius:8px;color:#fff;padding:10px}.btn{border:0;border-radius:8px;padding:9px 12px;background:var(--blue);color:#fff;font-weight:750;cursor:pointer}
+.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:19px;font-weight:850;margin:6px 8px 22px}.brand small{display:block;color:var(--muted);font-size:12px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a.active,.nav a:hover{background:#1d4ed8;color:#fff}
+.main{margin-left:224px;min-height:100vh}.top{height:66px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px}.top h1{margin:0;font-size:22px}.content{padding:22px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}.search{width:min(360px,45vw);background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px}.btn{border:0;border-radius:8px;padding:9px 12px;background:var(--blue);color:#fff;font-weight:750;cursor:pointer}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}.site{display:block;background:linear-gradient(180deg,#101e31,#0c1828);border:1px solid var(--line);border-radius:13px;padding:18px;color:var(--text);transition:.15s}.site:hover{transform:translateY(-2px);border-color:#3b82f6}.head{display:flex;justify-content:space-between;gap:12px}.name{font-size:19px;font-weight:850}.domain{color:#82b6ff;margin-top:3px}.badge{font-size:11px;font-weight:800;padding:5px 8px;border-radius:7px;height:max-content}.live{background:#0c4a3a;color:#59e3a0}.bad{background:#541b28;color:#ff8299}.maint{background:#573513;color:#ffc66b}
 .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:18px}.stat{background:#0a1524;border:1px solid #203249;border-radius:8px;padding:10px}.stat b{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:15px;color:var(--muted);font-size:12px}.owner{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:760px){.sidebar{display:none}.main{margin-left:0}.content{padding:14px}}
@@ -302,11 +303,11 @@ SITES_HTML = r"""
 """
 
 SITE_HTML = r"""
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ site.domain }} · WP Host Manager</title>
+<link rel="stylesheet" href="/static/theme.css">
 <style>
-:root{color-scheme:dark;--bg:#07111f;--side:#081322;--panel:#0f1b2d;--panel2:#0b1727;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626;--purple:#7c3aed}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}a{color:#60a5fa;text-decoration:none}.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:18px;font-weight:850;margin:5px 8px 22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:#c9d5e5}.nav a.active,.nav a:hover{background:#173c7a;color:#fff}.main{margin-left:224px;padding:22px;min-height:100vh}.back{display:inline-block;margin-bottom:15px;color:#d6e0ed}.hero{display:grid;grid-template-columns:1fr 370px;gap:16px}.card{background:linear-gradient(180deg,#101e31,#0d192a);border:1px solid var(--line);border-radius:12px;padding:17px}.title{font-size:27px;font-weight:900;margin:0 0 5px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}.chip{background:#17263b;padding:6px 9px;border-radius:7px;font-size:12px}.good{color:#4ade80}.bad{color:#fb7185}.warn{color:#fbbf24}.statusline{font-size:18px;font-weight:850}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}.metric{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px}.metric b{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.metric strong{font-size:20px}.actionsbar{display:grid;grid-template-columns:1.2fr .8fr auto;gap:20px;align-items:end}.sectiontitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}.buttonrow{display:flex;gap:9px;flex-wrap:wrap}.btn{border:1px solid #2f5ea5;background:#12294b;color:#fff;border-radius:8px;padding:10px 16px;font-weight:800;cursor:pointer}.btn.green{background:#0a493b;border-color:#087e61}.btn.orange{background:#5b360e;border-color:#b5670b}.btn.red{background:#561b29;border-color:#c62b43}.btn.purple{background:#34205b;border-color:#7241b5}.access{display:flex;gap:9px}.morewrap{position:relative}.morepanel{display:none;position:absolute;right:0;top:50px;width:760px;z-index:20;background:#0b1727;border:1px solid #31506f;border-radius:12px;padding:13px;box-shadow:0 18px 50px #0009}.morewrap.open .morepanel{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.moreitem{border:1px solid var(--line);border-radius:9px;padding:10px}.moreitem p{font-size:11px;color:var(--muted);min-height:42px}.moreitem .btn{width:100%;padding:8px}.tabs{display:flex;gap:4px;margin-top:17px;border-bottom:1px solid var(--line);overflow-x:auto}.tab{padding:11px 15px;color:#b8c5d6;cursor:pointer;border-bottom:2px solid transparent}.tab.active{color:#60a5fa;border-color:#3b82f6}.tabpane{display:none;padding-top:16px}.tabpane.active{display:block}.info{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.info .card .row{display:flex;justify-content:space-between;gap:12px;margin:9px 0;font-size:13px}.table{width:100%;border-collapse:collapse;font-size:12px}.table th,.table td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}.table th{color:#93c5fd}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.note{white-space:pre-wrap;color:#cad5e3}.fields{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.fields input,.fields textarea{width:100%;background:#091522;border:1px solid var(--line);color:#fff;border-radius:7px;padding:9px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}a{color:#60a5fa;text-decoration:none}.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:18px;font-weight:850;margin:5px 8px 22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a.active,.nav a:hover{background:#173c7a;color:#fff}.main{margin-left:224px;padding:22px;min-height:100vh}.back{display:inline-block;margin-bottom:15px;color:#d6e0ed}.hero{display:grid;grid-template-columns:1fr 370px;gap:16px}.card{background:linear-gradient(180deg,#101e31,#0d192a);border:1px solid var(--line);border-radius:12px;padding:17px}.title{font-size:27px;font-weight:900;margin:0 0 5px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}.chip{background:#17263b;padding:6px 9px;border-radius:7px;font-size:12px}.good{color:#4ade80}.bad{color:#fb7185}.warn{color:#fbbf24}.statusline{font-size:18px;font-weight:850}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}.metric{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px}.metric b{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.metric strong{font-size:20px}.actionsbar{display:grid;grid-template-columns:1.2fr .8fr auto;gap:20px;align-items:end}.sectiontitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}.buttonrow{display:flex;gap:9px;flex-wrap:wrap}.btn{border:1px solid #2f5ea5;background:#12294b;color:#fff;border-radius:8px;padding:10px 16px;font-weight:800;cursor:pointer}.btn.green{background:#0a493b;border-color:#087e61}.btn.orange{background:#5b360e;border-color:#b5670b}.btn.red{background:#561b29;border-color:#c62b43}.btn.purple{background:#34205b;border-color:#7241b5}.access{display:flex;gap:9px}.morewrap{position:relative}.morepanel{display:none;position:absolute;right:0;top:50px;width:760px;z-index:20;background:#0b1727;border:1px solid #31506f;border-radius:12px;padding:13px;box-shadow:0 18px 50px #0009}.morewrap.open .morepanel{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.moreitem{border:1px solid var(--line);border-radius:9px;padding:10px}.moreitem p{font-size:11px;color:var(--muted);min-height:42px}.moreitem .btn{width:100%;padding:8px}.tabs{display:flex;gap:4px;margin-top:17px;border-bottom:1px solid var(--line);overflow-x:auto}.tab{padding:11px 15px;color:#b8c5d6;cursor:pointer;border-bottom:2px solid transparent}.tab.active{color:#60a5fa;border-color:#3b82f6}.tabpane{display:none;padding-top:16px}.tabpane.active{display:block}.info{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.info .card .row{display:flex;justify-content:space-between;gap:12px;margin:9px 0;font-size:13px}.table{width:100%;border-collapse:collapse;font-size:12px}.table th,.table td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}.table th{color:#93c5fd}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.note{white-space:pre-wrap;color:#cad5e3}.fields{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.fields input,.fields textarea{width:100%;background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:9px}
 @media(max-width:1150px){.hero{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.actionsbar{grid-template-columns:1fr}.morepanel{position:fixed;left:10%;right:10%;width:auto;top:20%}.info{grid-template-columns:1fr}}@media(max-width:760px){.sidebar{display:none}.main{margin-left:0;padding:13px}.metrics{grid-template-columns:1fr}}
 </style></head><body>
 <aside class="sidebar"><div class="brand">WP Host Manager</div><nav class="nav"><a href="/">⌂ Dashboard</a><a class="active" href="/sites">▦ Sites</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_count %}<span class="bad">({{ security_count }})</span>{% endif %}</a>{% endif %}<a href="/#logs">▤ Logs</a></nav></aside>
@@ -426,11 +427,8 @@ HTML = r"""
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ platform_title }}</title>
+<link rel="stylesheet" href="/static/theme.css">
 <style>
-:root{color-scheme:dark;--bg:#07111f;--side:#081322;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626}
-[data-theme="light"]{color-scheme:light;--bg:#f4f6fb;--side:#ffffff;--panel:#ffffff;--line:#dde3ee;--text:#101828;--muted:#5b6b83;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626}
-[data-theme="forest"]{color-scheme:dark;--bg:#07130f;--side:#081a13;--panel:#0e2019;--line:#1f3a2d;--text:#e7f3ec;--muted:#8fb3a0;--blue:#2563eb;--green:#22c55e;--orange:#d97706;--red:#dc2626}
-[data-theme="sunset"]{color-scheme:dark;--bg:#1a0f07;--side:#221208;--panel:#2a170c;--line:#4a2c17;--text:#fbeee3;--muted:#c9a488;--blue:#3b82f6;--green:#059669;--orange:#f59e0b;--red:#ef4444}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
 .sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px;display:flex;flex-direction:column}.content{margin-left:224px}
 .brand{display:flex;gap:12px;align-items:center;padding:4px 7px 20px}.brandmark{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#155eef;font-weight:900}.brand strong{font-size:18px}.brand small{display:block;color:var(--muted)}
@@ -3240,7 +3238,7 @@ EMAIL_SETTINGS_HTML = open(
 
 USERS_PAGE_HTML = r"""
 <!doctype html>
-<html>
+<html data-theme="{{ current_theme }}">
 
 <head>
 
@@ -3253,25 +3251,9 @@ USERS_PAGE_HTML = r"""
 Users · {{ platform_title }}
 </title>
 
+<link rel="stylesheet" href="/static/theme.css">
 <style>
 
-:root {
-    color-scheme: dark;
-
-    --bg: #07111f;
-    --side: #081322;
-    --panel: #0f1b2d;
-    --line: #263850;
-
-    --text: #e7eef8;
-    --muted: #91a3bb;
-
-    --blue: #2563eb;
-    --green: #059669;
-    --orange: #d97706;
-    --red: #dc2626;
-    --purple: #7c3aed;
-}
 
 * {
     box-sizing: border-box;
@@ -3440,9 +3422,9 @@ select {
 
     padding: 10px;
 
-    background: #091522;
+    background: var(--field);
 
-    color: white;
+    color: var(--text);
 
     border:
         1px solid
@@ -4204,6 +4186,7 @@ def users_page():
 
     return render_template_string(
         USERS_PAGE_HTML,
+        current_theme=current_user_theme(),
 
         users=list_dashboard_users(),
 
@@ -4711,7 +4694,7 @@ def mfa_setup_route():
 SECURITY_HTML = r"""
 <!doctype html>
 
-<html>
+<html data-theme="{{ current_theme }}">
 
 <head>
 
@@ -4724,21 +4707,9 @@ SECURITY_HTML = r"""
 Account Security
 </title>
 
+<link rel="stylesheet" href="/static/theme.css">
 <style>
 
-:root {
-    color-scheme: dark;
-
-    --bg: #07111f;
-    --panel: #0f1b2d;
-    --line: #263850;
-    --text: #e7eef8;
-    --muted: #91a3bb;
-
-    --blue: #2563eb;
-    --green: #059669;
-    --red: #dc2626;
-}
 
 * {
     box-sizing: border-box;
@@ -5152,7 +5123,7 @@ Each recovery code can only be used once.
 @login_required
 def account_security():
     username=session.get("username"); entry=load_users().get(username,{})
-    return render_template_string(SECURITY_HTML,username=username,email=entry.get("email",""),mfa_enabled=bool(entry.get("mfa_enabled",False)))
+    return render_template_string(SECURITY_HTML,username=username,email=entry.get("email",""),mfa_enabled=bool(entry.get("mfa_enabled",False)),current_theme=current_user_theme())
 
 @APP.post("/account/mfa-disable")
 @login_required
@@ -5207,6 +5178,7 @@ def sites_page():
         sites=list_sites(),
         current_user=session.get("username","-"),
         current_role=current_role(),
+        current_theme=current_user_theme(),
         security_alert_count=security_alert_count() if current_role() in {"admin","user"} else 0,
     )
 
@@ -5233,6 +5205,7 @@ def site_dashboard(site):
         host_only=request.host.split(":")[0],
         manager_public_host=request.host.split(":")[0],
         current_user=session.get("username","-"),
+        current_theme=current_user_theme(),
         current_role=current_role(),
         security_count=len(site_security_findings(site)) if current_role() in {"admin","user"} else 0,
         pma_access=service_access_summary(site, "phpmyadmin"),
@@ -5526,6 +5499,7 @@ def alerts_page():
         site_ops={s["site"]:get_site_ops(s["site"]) for s in list_sites()},
         current_user=session.get("username","-"),
         current_role=current_role(),
+        current_theme=current_user_theme(),
     )
 
 @APP.post("/alerts/scan")
@@ -5798,8 +5772,9 @@ def change_password():
     return redirect(url_for("index"))
 
 BACKUP_DESTINATION_HTML = """
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Backup Destination · {{ platform_title }}</title>
-<style>:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--green);margin-top:16px}.tag{display:inline-block;padding:3px 7px;border-radius:6px;background:#17334b;font-size:11px}@media(max-width:700px){table{font-size:12px}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Backup Destination</h1>
+<!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Backup Destination · {{ platform_title }}</title>
+<link rel="stylesheet" href="/static/theme.css">
+<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--green);margin-top:16px}.tag{display:inline-block;padding:3px 7px;border-radius:6px;background:#17334b;font-size:11px}@media(max-width:700px){table{font-size:12px}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Backup Destination</h1>
 {% with messages = get_flashed_messages() %}{% for m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endwith %}
 <section class="card"><h2>Local Storage Location</h2><p class="muted">Choose which mounted disk stores local backups — your primary array, a second RAID array once built, or any other mounted volume.</p><form method="post" action="/admin/backup-destination"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><table><tr><th></th><th>Mountpoint</th><th>Device</th><th>Filesystem</th><th>Free space</th></tr>{% for d in destinations %}<tr><td><input type="radio" name="mountpoint" value="{{ d.mountpoint }}" {{ 'checked' if d.mountpoint == current_mountpoint else '' }} required style="width:auto"></td><td>{{ d.mountpoint }}{% if d.mountpoint == current_mountpoint %} <span class="tag">current</span>{% endif %}</td><td>{{ d.device }}</td><td>{{ d.fstype }}</td><td>{{ d.free }}</td></tr>{% else %}<tr><td colspan="5">No eligible mounted disks detected.</td></tr>{% endfor %}</table>
 <section class="card"><h2>Network NAS (secondary copy)</h2><p class="muted">Every local backup is copied here automatically once it's created. A NAS outage never blocks or breaks the local backup — it just skips replication until the NAS is back.</p>{% if nas.configured %}<p><b>Status:</b> {% if nas.mounted %}<span class="tag" style="background:#0d3b23;color:#4ade80">CONNECTED</span>{% else %}<span class="tag" style="background:#3b0d0d;color:#fb7185">DISCONNECTED</span>{% endif %} &nbsp; //{{ nas.server }}/{{ nas.share }} → {{ nas.mount_point }} &nbsp; free: {{ nas.free }}</p>{% endif %}<form method="post" action="/admin/backup-destination/nas/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Name<input name="name" value="{{ nas.name or 'Network NAS' }}" maxlength="60"></label><label>NAS address<input name="server" value="{{ nas.server }}" placeholder="192.168.1.20" required></label><label>Share<input name="share" value="{{ nas.share }}" placeholder="WordPressBackups" required></label><label>Username<input name="username" value="{{ nas.username }}" autocomplete="off" required></label><label>Password<input name="password" type="password" placeholder="{{ 'Saved — leave blank to keep current password' if nas.password_saved else 'SMB password' }}" autocomplete="new-password"></label><label>Mount name<input name="mount_name" value="{{ nas.mount_name or 'nas' }}" pattern="[A-Za-z0-9_-]+" required></label><label>NAS retention (backup sets per site)<input name="retention" type="number" min="1" max="365" value="{{ nas.retention or 30 }}"></label><button class="btn" name="mode" value="save_mount">Save &amp; Mount</button> <button class="btn" name="mode" value="save" style="background:var(--blue)">Save Only</button></form>{% if nas.configured %}<div style="margin-top:12px;display:flex;gap:8px"><form method="post" action="/admin/backup-destination/nas/test"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:var(--blue)">Test</button></form><form method="post" action="/admin/backup-destination/nas/mount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Mount / Remount</button></form><form method="post" action="/admin/backup-destination/nas/unmount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#d97706">Unmount</button></form></div>{% endif %}</section>
@@ -5813,7 +5788,7 @@ def email_settings_page_v911():
     data = load_email_settings()
     password_saved = bool(data.get("smtp_password"))
     view = dict(data); view["smtp_password"] = ""
-    return render_template_string(EMAIL_SETTINGS_V911_HTML, e=view, password_saved=password_saved)
+    return render_template_string(EMAIL_SETTINGS_V911_HTML, e=view, password_saved=password_saved, current_theme=current_user_theme())
 
 @APP.get("/admin/backup-destination")
 @admin_required
@@ -5823,6 +5798,7 @@ def backup_destination_page():
         destinations=available_backup_destinations(),
         current_mountpoint=current_backup_mountpoint(),
         current_role=current_role(),
+        current_theme=current_user_theme(),
         nas=nas_status(),
     )
 
