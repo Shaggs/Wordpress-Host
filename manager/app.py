@@ -98,7 +98,7 @@ PROXY_NETWORK = os.environ.get("WP_PROXY_NETWORK", "wp-proxy")
 AUTH_USER = os.environ["WP_DASHBOARD_USER"]
 AUTH_EMAIL = os.environ.get("WP_DASHBOARD_EMAIL", "")
 BOOTSTRAP_HASH = os.environ["WP_DASHBOARD_PASSWORD_HASH"]
-BOOTSTRAP_SALT = os.environ["WP_DASHBOARD_PASSWORD_SALT"]
+BOOTSTRAP_SALT = os.environ.get("WP_DASHBOARD_PASSWORD_SALT", "")
 
 AUTH_DB = BASE / "auth.db"
 USERS_FILE = BASE / "users.json"
@@ -422,21 +422,24 @@ document.addEventListener('click',e=>{const w=document.getElementById('moreWrap'
 
 HTML = r"""
 <!doctype html>
-<html>
+<html data-theme="{{ current_theme }}">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ platform_title }}</title>
 <style>
 :root{color-scheme:dark;--bg:#07111f;--side:#081322;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626}
+[data-theme="light"]{color-scheme:light;--bg:#f4f6fb;--side:#ffffff;--panel:#ffffff;--line:#dde3ee;--text:#101828;--muted:#5b6b83;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626}
+[data-theme="forest"]{color-scheme:dark;--bg:#07130f;--side:#081a13;--panel:#0e2019;--line:#1f3a2d;--text:#e7f3ec;--muted:#8fb3a0;--blue:#2563eb;--green:#22c55e;--orange:#d97706;--red:#dc2626}
+[data-theme="sunset"]{color-scheme:dark;--bg:#1a0f07;--side:#221208;--panel:#2a170c;--line:#4a2c17;--text:#fbeee3;--muted:#c9a488;--blue:#3b82f6;--green:#059669;--orange:#f59e0b;--red:#ef4444}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
 .sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px;display:flex;flex-direction:column}.content{margin-left:224px}
 .brand{display:flex;gap:12px;align-items:center;padding:4px 7px 20px}.brandmark{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#155eef;font-weight:900}.brand strong{font-size:18px}.brand small{display:block;color:var(--muted)}
-.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:#c9d5e5}.nav a:hover,.nav a.active{background:#1d4ed8;color:#fff}.sidefoot{margin-top:auto}
+.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a:hover,.nav a.active{background:#1d4ed8;color:#fff}.sidefoot{margin-top:auto}
 .health,.userbox,.section,.kpi,.flash{background:var(--panel);border:1px solid var(--line);border-radius:10px}.health{padding:13px}.health h4{margin:0 0 12px;color:#55db92}.mrow{display:flex;justify-content:space-between;font-size:12px;margin:8px 0 4px}.track{height:5px;background:#203047;border-radius:9px;overflow:hidden}.track b{display:block;height:100%;background:#19b56b}
 .userbox{display:flex;gap:9px;align-items:center;padding:12px;margin-top:14px}.avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#293a52}
 .top{height:66px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 22px;position:sticky;top:0;background:rgba(7,17,31,.95);z-index:3}.top h1{margin:0;font-size:22px}
 .search,input,select{background:#0b1727;border:1px solid var(--line);border-radius:8px;color:#fff;padding:9px 10px}.search{width:260px}main{padding:20px 22px 38px}.flash{padding:10px 12px;margin-bottom:10px}.section{padding:16px;margin-bottom:18px}
-.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px}.kpi{padding:16px}.kpi strong{display:block;font-size:22px}.kpi small,.muted{color:var(--muted);font-size:12px}.sectionhead,.toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.sectionhead h2{margin:0;font-size:17px}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px}.kpi{padding:16px}.kpi strong{display:block;font-size:22px;margin-bottom:2px}.kpi small{display:block;color:var(--muted);font-size:12px;margin-top:2px}.muted{color:var(--muted);font-size:12px}.sectionhead,.toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.sectionhead h2{margin:0;font-size:17px}
 .btn{border:0;border-radius:7px;color:white;padding:8px 10px;font-weight:700;font-size:12px;cursor:pointer;background:#475569}.blue{background:var(--blue)}.green{background:var(--green)}.orange{background:var(--orange)}.red{background:var(--red)}
 .siteswrap{overflow-x:auto}.sitecard{min-width:1380px;display:grid;grid-template-columns:220px 140px 215px 175px 180px 155px 135px 175px;border:1px solid var(--line);border-radius:10px;background:#0c1828;margin:12px 0;overflow:hidden}.cell{padding:15px;border-right:1px solid var(--line);min-height:185px}.cell:last-child{border-right:0}.title{font-size:17px;font-weight:800}.label{text-transform:uppercase;font-size:10px;letter-spacing:.06em;color:var(--muted);margin-bottom:8px}.row{display:flex;justify-content:space-between;gap:8px;font-size:12px;margin:10px 0}.good{color:#4ade80;font-weight:800}.bad{color:#fb7185;font-weight:800}.warn{color:#fbbf24;font-weight:800}.pill{display:inline-block;padding:5px 8px;border-radius:6px;margin-top:8px;background:#17334b;font-size:11px}
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}.actions .wide{grid-column:1/-1}.actions button{width:100%}.audit{max-height:350px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}th{color:#8ec1ff}.formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
@@ -448,7 +451,7 @@ HTML = r"""
 <div class="sidefoot"><div class="health"><h4>● System Healthy</h4><div class="mrow"><span>CPU</span><span>{{ host_stats.cpu }}%</span></div><div class="track"><b style="width:{{ host_stats.cpu }}%"></b></div><div class="mrow"><span>RAM</span><span>{{ host_stats.ram_percent }}%</span></div><div class="track"><b style="width:{{ host_stats.ram_percent }}%"></b></div>{% for d in host_stats.disks %}<div class="mrow"><span>{{ d.mountpoint }}</span><span>{{ d.percent }}%</span></div><div class="track"><b style="width:{{ d.percent }}%"></b></div>{% endfor %}</div>
 <div class="userbox"><div class="avatar">{{ current_user[:1]|upper }}</div><div><strong>{{ current_user }}</strong><div class="muted">{{ current_role|title }}</div></div></div><p><a href="/logout">⇱ Log out</a></p></div>
 </aside>
-<div class="content"><header class="top"><h1>Dashboard</h1><div><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"> <a class="btn blue" href="/">↻ Refresh</a></div></header><main>
+<div class="content"><header class="top"><h1>Dashboard</h1><div><form method="post" action="/account/theme" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="theme" onchange="this.form.submit()" title="Colour scheme"><option value="midnight" {{ 'selected' if current_theme=='midnight' else '' }}>🌙 Midnight</option><option value="light" {{ 'selected' if current_theme=='light' else '' }}>☀ Light</option><option value="forest" {{ 'selected' if current_theme=='forest' else '' }}>🌲 Forest</option><option value="sunset" {{ 'selected' if current_theme=='sunset' else '' }}>🌇 Sunset</option></select></form><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"> <a class="btn blue" href="/">↻ Refresh</a></div></header><main>
 {% with messages = get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
 <div class="kpis"><div class="kpi"><strong>{{ site_summary.total }}</strong>Total Sites<small>All sites on this server</small></div><div class="kpi"><strong class="good">{{ site_summary.running }}</strong>Running<small>Active and healthy</small></div><div class="kpi"><strong class="warn">{{ site_summary.not_created }}</strong>Not Created<small>Awaiting setup</small></div><div class="kpi"><strong>{{ site_summary.backups }}</strong>Total Backups<small>Across all sites</small></div><div class="kpi"><strong>{{ host_stats.disk_used }}</strong>Storage Used<small>Host filesystem</small></div></div>
 {% if alerts %}<section class="section"><div class="sectionhead"><h2>Active Alerts</h2></div>{% for a in alerts %}<div class="flash"><b>{{ a.site }}</b>: {{ a.message }}</div>{% endfor %}</section>{% endif %}
@@ -491,7 +494,10 @@ def init_auth():
     if not USERS_FILE.exists():
         users = {
             AUTH_USER: {
-                "password_hash": f"legacy_sha256${BOOTSTRAP_SALT}${BOOTSTRAP_HASH}",
+                "password_hash": (
+                    BOOTSTRAP_HASH if BOOTSTRAP_HASH.startswith(("scrypt:", "pbkdf2:"))
+                    else f"legacy_sha256${BOOTSTRAP_SALT}${BOOTSTRAP_HASH}"
+                ),
                 "email": AUTH_EMAIL,
                 "enabled": True,
                 "role": "admin",
@@ -868,6 +874,29 @@ def login_required(fn):
             return redirect(url_for("login", next=request.path))
         return fn(*args, **kwargs)
     return wrapper
+
+VALID_THEMES = {"midnight", "light", "forest", "sunset"}
+
+def current_user_theme():
+    username = session.get("username")
+    if not username:
+        return "midnight"
+    entry = load_users().get(username, {})
+    theme = entry.get("theme", "midnight")
+    return theme if theme in VALID_THEMES else "midnight"
+
+@APP.post("/account/theme")
+@login_required
+def account_theme_save():
+    theme = request.form.get("theme", "midnight")
+    if theme not in VALID_THEMES:
+        theme = "midnight"
+    username = session.get("username")
+    users = load_users()
+    if username in users:
+        users[username]["theme"] = theme
+        save_users(users)
+    return redirect(request.referrer or url_for("index"))
 
 def log_action(action, target="-", result="success", detail=""):
     username = session.get("username", "system") if request else "system"
@@ -1363,9 +1392,21 @@ def _valid_source_ip(value):
         raise ValueError(f"Invalid source IP address: {raw}")
 
 
+TRUSTED_PROXY_IPS = {
+    ip.strip() for ip in os.environ.get("WP_TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if ip.strip()
+}
+
 def detected_client_ip():
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    candidate = forwarded.split(",", 1)[0].strip() if forwarded else (request.remote_addr or "")
+    # Only trust X-Forwarded-For when the immediate connecting peer is a
+    # known, trusted reverse proxy. Otherwise anyone could set this header
+    # themselves to spoof their source IP and bypass IP-restricted features
+    # (e.g. temporary phpMyAdmin/SFTP access).
+    peer = request.remote_addr or ""
+    if peer in TRUSTED_PROXY_IPS:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        candidate = forwarded.split(",", 1)[0].strip() if forwarded else peer
+    else:
+        candidate = peer
     try:
         return _valid_source_ip(candidate)
     except Exception:
@@ -5145,6 +5186,7 @@ def index():
         host=request.host,
         host_only=host_only,
         current_user=session.get("username","-"),
+        current_theme=current_user_theme(),
         current_role=current_role(),
         users=list_dashboard_users() if current_role() == "admin" else [],
         email_settings=load_email_settings() if current_role() == "admin" else {},

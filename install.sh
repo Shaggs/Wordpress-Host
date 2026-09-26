@@ -144,11 +144,19 @@ cp "$ROOT/manager/site-compose.yml.tpl" "$MANAGER_DIR/site-compose.yml.tpl"
 cp -a "$ROOT/manager/templates/." "$MANAGER_DIR/templates/"
 cp -a "$ROOT/manager/static/." "$MANAGER_DIR/static/"
 
-DASHBOARD_SALT="$(openssl rand -hex 16)"
+echo "[6/9] Creating Python environment..."
+python3 -m venv "$MANAGER_DIR/venv"
+"$MANAGER_DIR/venv/bin/pip" install --upgrade pip
+"$MANAGER_DIR/venv/bin/pip" install -r "$MANAGER_DIR/requirements.txt"
+
+# Generate a real scrypt hash via the venv's own installed Werkzeug, rather
+# than a single plain SHA-256 pass — this must happen after the venv exists.
 DASHBOARD_HASH="$(
-    printf '%s' "${DASHBOARD_SALT}${DASHBOARD_PASSWORD}" \
-        | sha256sum \
-        | awk '{print $1}'
+    "$MANAGER_DIR/venv/bin/python" -c '
+import sys
+from werkzeug.security import generate_password_hash
+print(generate_password_hash(sys.argv[1], method="scrypt"))
+' "${DASHBOARD_PASSWORD}"
 )"
 FLASK_SECRET="$(openssl rand -hex 32)"
 
@@ -166,7 +174,6 @@ WP_DASHBOARD_PORT=${DASHBOARD_PORT}
 WP_DASHBOARD_USER=${DASHBOARD_USER}
 WP_DASHBOARD_EMAIL=${DASHBOARD_EMAIL}
 WP_DASHBOARD_PASSWORD_HASH=${DASHBOARD_HASH}
-WP_DASHBOARD_PASSWORD_SALT=${DASHBOARD_SALT}
 WP_FLASK_SECRET=${FLASK_SECRET}
 
 WP_NPM_URL=http://127.0.0.1:81
@@ -176,11 +183,6 @@ WP_LE_EMAIL=${LE_EMAIL}
 MANAGERENV
 
 chmod 600 "$MANAGER_DIR/manager.env"
-
-echo "[6/9] Creating Python environment..."
-python3 -m venv "$MANAGER_DIR/venv"
-"$MANAGER_DIR/venv/bin/pip" install --upgrade pip
-"$MANAGER_DIR/venv/bin/pip" install -r "$MANAGER_DIR/requirements.txt"
 
 echo "[7/9] Running source + authentication preflight..."
 set -a

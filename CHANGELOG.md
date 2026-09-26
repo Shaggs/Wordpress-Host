@@ -1,5 +1,15 @@
 # Changelog
 
+## 9.6.0
+- Added a per-disk usage table to the dashboard's System section, listing every mounted filesystem (device, mountpoint, filesystem type, used/total/free, percentage).
+- Fixed KPI card spacing on the dashboard (label and description text were running together on one line).
+- Added a per-user colour scheme selector (Midnight/Light/Forest/Sunset) next to the search box; the choice is stored on the user's own account and persists across devices/sessions.
+- Fixed Light/Forest/Sunset themes not correctly recolouring the header bar, search box, and sidebar navigation links (these were hardcoded rather than tied to the theme's CSS variables).
+- Security: bootstrap admin password is now hashed with scrypt (via Werkzeug) at install time instead of a single SHA-256 pass; existing installs continue to authenticate via the legacy verification path unchanged.
+- Security: detected_client_ip() no longer trusts X-Forwarded-For from arbitrary peers, only from a configurable trusted-proxy allowlist (WP_TRUSTED_PROXY_IPS, default 127.0.0.1/::1) — closes a spoofing hole that could bypass the temporary phpMyAdmin/SFTP source-IP restriction.
+- Security: ZIP extraction now rejects symlink-type archive entries as defense-in-depth against a "zip slip via symlink" pattern.
+- Retains all V9.5 backup-destination/NAS, V9.4 temporary access, V9.3 port allocation and V9.2 authentication/MFA/SMTP functionality.
+
 ## 9.5.0
 - Added a per-disk usage table to the dashboard's System section, listing every mounted filesystem (device, mountpoint, filesystem type, used/total/free, percentage).
 - The dashboard's headline Storage metric now reports the platform's actual data disk rather than the OS root filesystem.

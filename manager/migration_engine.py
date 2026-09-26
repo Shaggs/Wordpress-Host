@@ -90,6 +90,11 @@ def safe_extract(zpath, dest):
     dest = dest.resolve()
     with zipfile.ZipFile(zpath, "r") as z:
         for m in z.infolist():
+            # Reject symlink-type ZIP entries outright (defense-in-depth;
+            # see module docstring for why this matters even though the
+            # default extraction path doesn't currently materialize them).
+            if (m.external_attr >> 16) & 0o170000 == 0o120000:
+                raise RuntimeError(f"Symlink in ZIP rejected: {m.filename}")
             target = (dest / m.filename).resolve()
             if target != dest and dest not in target.parents:
                 raise RuntimeError(f"Unsafe ZIP path rejected: {m.filename}")
