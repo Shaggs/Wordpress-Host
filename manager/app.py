@@ -173,11 +173,11 @@ button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;backgr
 """
 
 EMAIL_SETTINGS_V911_HTML = r"""
-<!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Email Settings · {{ platform_title }}</title>
+<!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Settings · {{ platform_title }}</title>
 <link rel="stylesheet" href="/static/theme.css">
-<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}label{display:block;font-weight:700;margin-top:14px}input,select{width:100%;padding:10px;margin-top:5px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}.grid{display:grid;grid-template-columns:2fr 1fr;gap:12px}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--blue);margin-top:16px}.green{background:var(--green)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Email Settings</h1>
+<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}label{display:block;font-weight:700;margin-top:14px}input,select{width:100%;padding:10px;margin-top:5px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}.grid{display:grid;grid-template-columns:2fr 1fr;gap:12px}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--blue);margin-top:16px}.green{background:var(--green)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Settings</h1>
 {% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}
-<section class="card"><h2>SMTP</h2><p class="muted">Shared by platform alerts, new-user temporary passwords and password recovery.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="save"><div class="grid"><label>SMTP Host<input name="smtp_host" value="{{e.smtp_host}}"></label><label>Port<input name="smtp_port" type="number" value="{{e.smtp_port}}"></label></div><label>Username<input name="smtp_username" value="{{e.smtp_username}}"></label><label>Password<input name="smtp_password" type="password" placeholder="{{'Saved — leave blank to keep current password' if password_saved else 'SMTP password'}}"></label><label>From Address<input name="from_email" type="email" value="{{e.from_email}}"></label><label>Security<select name="security"><option value="starttls" {% if e.security=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if e.security=='ssl' %}selected{% endif %}>SSL/TLS</option><option value="none" {% if e.security=='none' %}selected{% endif %}>None</option></select></label><h3>Platform Alerts</h3><label><input style="width:auto" type="checkbox" name="enabled" {% if e.enabled %}checked{% endif %}> Enable alert emails</label><label>Alert Recipients<input name="recipients" value="{{e.recipients}}"></label><div class="grid"><label>Health check minutes<input name="check_minutes" type="number" min="1" max="60" value="{{e.check_minutes}}"></label><label>Failure threshold<input name="failure_threshold" type="number" min="1" max="10" value="{{e.failure_threshold}}"></label></div><label><input style="width:auto" type="checkbox" name="send_recovery" {% if e.send_recovery %}checked{% endif %}> Send recovery notifications</label><button class="btn">Save Email Settings</button></form></section><section class="card"><h2>Test SMTP</h2><p class="muted">Save settings first. The test is sent to the Alert Recipients above.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="test">{% for name in ['smtp_host','smtp_port','smtp_username','from_email','recipients','security','check_minutes','failure_threshold'] %}<input type="hidden" name="{{name}}" value="{{e[name]}}">{% endfor %}{% if e.enabled %}<input type="hidden" name="enabled" value="on">{% endif %}{% if e.send_recovery %}<input type="hidden" name="send_recovery" value="on">{% endif %}<button class="btn green">Send Test Email</button></form></section></div></body></html>
+<section class="card"><h2>SMTP</h2><p class="muted">Shared by platform alerts, new-user temporary passwords and password recovery.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="save"><div class="grid"><label>SMTP Host<input name="smtp_host" value="{{e.smtp_host}}"></label><label>Port<input name="smtp_port" type="number" value="{{e.smtp_port}}"></label></div><label>Username<input name="smtp_username" value="{{e.smtp_username}}"></label><label>Password<input name="smtp_password" type="password" placeholder="{{'Saved — leave blank to keep current password' if password_saved else 'SMTP password'}}"></label><label>From Address<input name="from_email" type="email" value="{{e.from_email}}"></label><label>Security<select name="security"><option value="starttls" {% if e.security=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if e.security=='ssl' %}selected{% endif %}>SSL/TLS</option><option value="none" {% if e.security=='none' %}selected{% endif %}>None</option></select></label><h3>Platform Alerts</h3><label><input style="width:auto" type="checkbox" name="enabled" {% if e.enabled %}checked{% endif %}> Enable alert emails</label><label>Alert Recipients<input name="recipients" value="{{e.recipients}}"></label><div class="grid"><label>Health check minutes<input name="check_minutes" type="number" min="1" max="60" value="{{e.check_minutes}}"></label><label>Failure threshold<input name="failure_threshold" type="number" min="1" max="10" value="{{e.failure_threshold}}"></label></div><label><input style="width:auto" type="checkbox" name="send_recovery" {% if e.send_recovery %}checked{% endif %}> Send recovery notifications</label><button class="btn">Save Email Settings</button></form></section><section class="card"><h2>Test SMTP</h2><p class="muted">Save settings first. The test is sent to the Alert Recipients above.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="test">{% for name in ['smtp_host','smtp_port','smtp_username','from_email','recipients','security','check_minutes','failure_threshold'] %}<input type="hidden" name="{{name}}" value="{{e[name]}}">{% endfor %}{% if e.enabled %}<input type="hidden" name="enabled" value="on">{% endif %}{% if e.send_recovery %}<input type="hidden" name="send_recovery" value="on">{% endif %}<button class="btn green">Send Test Email</button></form></section><section class="card"><h2>Vulnerability Scanning</h2><p class="muted">Optionally check installed plugins/themes against Wordfence's known-vulnerability feed during migration scans, in addition to the wordpress.org outdated-version check.</p><form method="post" action="/admin/settings/wordfence/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label><input style="width:auto" type="checkbox" name="enabled" {% if wordfence.enabled %}checked{% endif %}> Enable Wordfence vulnerability feed matching</label><label>Wordfence API Key (optional)<input name="api_key" type="password" placeholder="{{ 'Saved — leave blank to keep current key' if wordfence.api_key_saved else 'API key (optional, increases feed access)' }}"></label><button class="btn">Save Scanning Settings</button></form></section></div></body></html>
 """
 
 ALERTS_HTML = r"""
@@ -380,7 +380,7 @@ SITE_HTML = r"""
 <section class="tabpane" id="tab-themes"><div class="card"><h3>Themes</h3><table class="table"><tr><th>Theme</th><th>Version</th></tr>{% for p in runtime.theme_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No theme inventory available.</td></tr>{% endfor %}</table></div></section>
 <section class="tabpane" id="tab-database"><div class="card"><h3>Database</h3><p>Database host: <b>{{ runtime.db_host }}</b></p><p>Database name: <b>{{ runtime.db_name }}</b></p><p>Database user: <b>{{ runtime.db_user }}</b></p>{% if current_role in ['admin','user'] %}{% if pma_access.open %}<a class="btn green" target="_blank" rel="noopener" href="http://{{ manager_public_host }}:{{ site.phpmyadmin_port }}">Open phpMyAdmin ↗</a> <form method="post" action="/access/{{ site.site }}/phpmyadmin/close" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Close Firewall</button></form>{% else %}<form method="post" target="_blank" action="/access/{{ site.site }}/phpmyadmin/open/30"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="source_ip" value="{{ client_ip }}"><input type="hidden" name="launch" value="1"><button class="btn">Open phpMyAdmin for 30m ↗</button></form>{% endif %}{% endif %}</div></section>
 <section class="tabpane" id="tab-logs"><div class="card"><h3>Site Audit Log</h3><table class="table"><tr><th>Time (Adelaide)</th><th>User</th><th>Action</th><th>Result</th><th>Detail</th></tr>{% for x in audits %}<tr><td>{{ x.timestamp }}</td><td>{{ x.username }}</td><td>{{ x.action }}</td><td>{{ x.result }}</td><td>{{ x.detail }}</td></tr>{% else %}<tr><td colspan="5">No site-specific audit events.</td></tr>{% endfor %}</table></div></section>
-<section class="tabpane" id="tab-security"><div class="card"><h3>Security</h3><p>WordPress core checksums: <b class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</b></p><table class="table"><tr><th>Severity</th><th>Finding</th><th>Path</th><th>Last Seen (Adelaide)</th></tr>{% for f in findings %}<tr><td>{{ f.severity }}</td><td>{{ f.message }}</td><td>{{ f.path }}</td><td>{{ f.last_seen }}</td></tr>{% else %}<tr><td colspan="4">No active security findings.</td></tr>{% endfor %}</table></div><div class="card"><h3>Version &amp; Vulnerability Scan</h3>{% if not vuln_scan %}<p class="muted">No scan has run yet. This runs automatically after each migration.</p>{% else %}<p class="muted">Checked {{ vuln_scan.checked_at }}</p><table class="table"><tr><th>Component</th><th>Installed</th><th>Latest</th><th>Status</th></tr>{% if vuln_scan.core %}<tr><td>{{ vuln_scan.core.name }}</td><td>{{ vuln_scan.core.installed }}</td><td>{{ vuln_scan.core.latest or '-' }}</td><td>{% if vuln_scan.core.outdated %}<span class="bad">Outdated</span>{% elif vuln_scan.core.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endif %}{% for p in vuln_scan.plugins %}<tr><td>{{ p.name }} (plugin)</td><td>{{ p.installed or '-' }}</td><td>{{ p.latest or '-' }}</td><td>{% if p.outdated %}<span class="bad">Outdated</span>{% elif p.closed %}<span class="bad">Closed on wp.org</span>{% elif p.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif p.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}{% for t in vuln_scan.themes %}<tr><td>{{ t.name }} (theme)</td><td>{{ t.installed or '-' }}</td><td>{{ t.latest or '-' }}</td><td>{% if t.outdated %}<span class="bad">Outdated</span>{% elif t.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif t.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</div></section>
+<section class="tabpane" id="tab-security"><div class="card"><h3>Security</h3><p>WordPress core checksums: <b class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</b></p><table class="table"><tr><th>Severity</th><th>Finding</th><th>Path</th><th>Last Seen (Adelaide)</th></tr>{% for f in findings %}<tr><td>{{ f.severity }}</td><td>{{ f.message }}</td><td>{{ f.path }}</td><td>{{ f.last_seen }}</td></tr>{% else %}<tr><td colspan="4">No active security findings.</td></tr>{% endfor %}</table></div><div class="card"><h3>Version &amp; Vulnerability Scan</h3>{% if not vuln_scan %}<p class="muted">No scan has run yet. This runs automatically after each migration.</p>{% else %}<p class="muted">Checked {{ vuln_scan.checked_at }}</p><table class="table"><tr><th>Component</th><th>Installed</th><th>Latest</th><th>Status</th></tr>{% if vuln_scan.core %}<tr><td>{{ vuln_scan.core.name }}</td><td>{{ vuln_scan.core.installed }}</td><td>{{ vuln_scan.core.latest or '-' }}</td><td>{% if vuln_scan.core.vulnerabilities %}{% for v in vuln_scan.core.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif vuln_scan.core.outdated %}<span class="bad">Outdated</span>{% elif vuln_scan.core.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endif %}{% for p in vuln_scan.plugins %}<tr><td>{{ p.name }} (plugin)</td><td>{{ p.installed or '-' }}</td><td>{{ p.latest or '-' }}</td><td>{% if p.vulnerabilities %}{% for v in p.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif p.outdated %}<span class="bad">Outdated</span>{% elif p.closed %}<span class="bad">Closed on wp.org</span>{% elif p.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif p.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}{% for t in vuln_scan.themes %}<tr><td>{{ t.name }} (theme)</td><td>{{ t.installed or '-' }}</td><td>{{ t.latest or '-' }}</td><td>{% if t.vulnerabilities %}{% for v in t.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif t.outdated %}<span class="bad">Outdated</span>{% elif t.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif t.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</div></section>
 {% if site.sftp_enabled %}<section class="card" style="margin-top:16px"><h3>SFTP Access</h3><div class="row"><span>Status</span><b class="good">ENABLED</b></div><div class="row"><span>Host</span><b>{{ manager_public_host }}</b></div><div class="row"><span>Allocated Port</span><b>{{ site.sftp_port }}</b></div><div class="row"><span>Username</span><b>wordpress</b></div><div class="row"><span>Protocol</span><b>SFTP / SSH</b></div><p class="muted">Use the allocated port shown above. The password is shown only when SFTP is enabled/reset. Use SFTP, not FTP/FTPS.</p></section>{% endif %}
 <section class="tabpane" id="tab-migration">
 <div class="card">
@@ -447,7 +447,7 @@ HTML = r"""
 </style></head><body>
 <aside class="sidebar">
 <div class="brand"><div class="brandmark">{{ platform_name[:1]|upper }}</div><div><strong>{{ platform_name }}</strong><small>Hosting Manager</small></div></div>
-<nav class="nav"><a class="active" href="/">⌂ Dashboard</a><a href="/sites">▦ Sites</a><a href="#backups">◫ Backups</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_alert_count %}<span class="bad">({{ security_alert_count }})</span>{% endif %}</a>{% endif %}{% if current_role == 'admin' %}<a href="/users">♟ Users</a><a href="/admin/email-settings">✉ Email Settings</a><a href="/admin/backup-destination">💾 Backup Destination</a><a href="/admin/ports">⇄ Port Manager</a>{% endif %}<a href="#system">⚙ System</a><a href="#logs">▤ Logs</a></nav>
+<nav class="nav"><a class="active" href="/">⌂ Dashboard</a><a href="/sites">▦ Sites</a><a href="#backups">◫ Backups</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_alert_count %}<span class="bad">({{ security_alert_count }})</span>{% endif %}</a>{% endif %}{% if current_role == 'admin' %}<a href="/users">♟ Users</a><a href="/admin/email-settings">⚙ Settings</a><a href="/admin/backup-destination">💾 Backup Destination</a><a href="/admin/ports">⇄ Port Manager</a>{% endif %}<a href="#system">⚙ System</a><a href="#logs">▤ Logs</a></nav>
 <div class="sidefoot"><div class="health"><h4>● System Healthy</h4><div class="mrow"><span>CPU</span><span>{{ host_stats.cpu }}%</span></div><div class="track"><b style="width:{{ host_stats.cpu }}%"></b></div><div class="mrow"><span>RAM</span><span>{{ host_stats.ram_percent }}%</span></div><div class="track"><b style="width:{{ host_stats.ram_percent }}%"></b></div>{% for d in host_stats.disks %}<div class="mrow"><span>{{ d.mountpoint }}</span><span>{{ d.percent }}%</span></div><div class="track"><b style="width:{{ d.percent }}%"></b></div>{% endfor %}</div>
 <div class="userbox"><div class="avatar">{{ current_user[:1]|upper }}</div><div><strong>{{ current_user }}</strong><div class="muted">{{ current_role|title }}</div></div></div><p><a href="/logout">⇱ Log out</a></p></div>
 </aside>
@@ -2464,6 +2464,90 @@ def plugin_theme_inventory(site):
         return c.exec_run(["php","-r",code]).output.decode(errors="ignore")
     except Exception as e:return str(e)
 
+WORDFENCE_FEED_URL = "https://www.wordfence.com/api/intelligence/v2/vulnerabilities/production"
+WORDFENCE_FEED_CACHE_FILE = BASE / "wordfence-feed-cache.json"
+WORDFENCE_FEED_CACHE_MAX_AGE = 24 * 3600
+
+def wordfence_version_in_range(version, rng):
+    v = vuln_version_tuple(version)
+    lo, hi = str(rng.get("from_version", "*")), str(rng.get("to_version", "*"))
+    if lo not in ("*", ""):
+        f = vuln_version_tuple(lo)
+        if v < f or (v == f and not rng.get("from_inclusive", True)):
+            return False
+    if hi not in ("*", ""):
+        t = vuln_version_tuple(hi)
+        if v > t or (v == t and not rng.get("to_inclusive", True)):
+            return False
+    return True
+
+def match_wordfence_vulns(feed, kind, slug, version):
+    if not feed or not version:
+        return []
+    entries = feed.values() if isinstance(feed, dict) else feed
+    matches = []
+    slug_l = (slug or "").lower()
+    for vuln in entries:
+        if not isinstance(vuln, dict) or vuln.get("informational"):
+            continue
+        for sw in vuln.get("software", []):
+            if str(sw.get("type", "")).lower() != kind:
+                continue
+            if str(sw.get("slug", "")).lower() != slug_l:
+                continue
+            ranges = (sw.get("affected_versions") or {}).values()
+            if not any(wordfence_version_in_range(version, r) for r in ranges):
+                continue
+            cvss = vuln.get("cvss") or {}
+            sev_map = {"critical": "CRITICAL", "high": "HIGH", "medium": "MEDIUM", "low": "LOW", "none": "INFO"}
+            severity = sev_map.get(str(cvss.get("rating", "")).lower(), "HIGH")
+            fixed = sw.get("patched_versions") or []
+            matches.append({
+                "cve": vuln.get("cve") or "No CVE",
+                "title": vuln.get("title", "Untitled vulnerability"),
+                "severity": severity,
+                "fixed_in": ", ".join(map(str, fixed)) if fixed else None,
+                "link": vuln.get("cve_link") or (vuln.get("references") or [None])[0],
+            })
+    return matches
+
+def load_wordfence_feed():
+    """Return the cached Wordfence vulnerability feed, downloading a fresh
+    copy if missing/stale. Returns None if disabled or unavailable. Cached
+    globally (not per-site) since it's a large shared feed."""
+    settings = load_wordfence_settings()
+    if not settings.get("enabled"):
+        return None
+
+    if WORDFENCE_FEED_CACHE_FILE.exists():
+        try:
+            cached = json.loads(WORDFENCE_FEED_CACHE_FILE.read_text())
+            age = time.time() - cached.get("fetched_at", 0)
+            if age < WORDFENCE_FEED_CACHE_MAX_AGE:
+                return cached.get("feed")
+        except Exception:
+            pass
+
+    try:
+        headers = {"User-Agent": "wp-host-manager/1.0", "Accept": "application/json"}
+        api_key = get_wordfence_api_key()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        r = requests.get(WORDFENCE_FEED_URL, headers=headers, timeout=180)
+        r.raise_for_status()
+        feed = r.json()
+        WORDFENCE_FEED_CACHE_FILE.write_text(json.dumps({"fetched_at": time.time(), "feed": feed}))
+        return feed
+    except Exception:
+        if WORDFENCE_FEED_CACHE_FILE.exists():
+            try:
+                cached = json.loads(WORDFENCE_FEED_CACHE_FILE.read_text())
+                return cached.get("feed")
+            except Exception:
+                pass
+        return None
+
+
 def check_outdated_components(site):
     """Check installed WordPress core, plugin and theme versions against
     the latest available on wordpress.org. Runs synchronously after each
@@ -2490,6 +2574,8 @@ def check_outdated_components(site):
             elif len(parts) >= 3 and parts[0] == "THEME":
                 themes[parts[1]] = parts[2]
 
+        wf_feed = load_wordfence_feed()
+
         if core_version and core_version != "-":
             try:
                 r = requests.get("https://api.wordpress.org/core/version-check/1.7/", timeout=15)
@@ -2502,6 +2588,8 @@ def check_outdated_components(site):
                 }
             except Exception as e:
                 result["core"] = {"name": "WordPress", "installed": core_version, "latest": None, "error": str(e)}
+            if wf_feed and result["core"]:
+                result["core"]["vulnerabilities"] = match_wordfence_vulns(wf_feed, "core", "wordpress", core_version)
 
         for slug, installed in plugins.items():
             plugin_slug = slug.split("/")[0].replace(".php", "")
@@ -2524,6 +2612,8 @@ def check_outdated_components(site):
                         entry["outdated"] = vuln_version_tuple(installed) < vuln_version_tuple(latest)
             except Exception as e:
                 entry["error"] = str(e)
+            if wf_feed:
+                entry["vulnerabilities"] = match_wordfence_vulns(wf_feed, "plugin", plugin_slug, installed)
             result["plugins"].append(entry)
 
         for slug, installed in themes.items():
@@ -2545,6 +2635,8 @@ def check_outdated_components(site):
                         entry["outdated"] = vuln_version_tuple(installed) < vuln_version_tuple(latest)
             except Exception as e:
                 entry["error"] = str(e)
+            if wf_feed:
+                entry["vulnerabilities"] = match_wordfence_vulns(wf_feed, "theme", slug, installed)
             result["themes"].append(entry)
 
     except Exception as e:
@@ -3738,7 +3830,7 @@ Hosting Manager
 </a>
 
 <a href="/admin/email-settings">
-✉ Email Settings
+⚙ Settings
 </a>
 
 <a href="/account/security">
@@ -5940,13 +6032,58 @@ BACKUP_DESTINATION_HTML = """
 </div></body></html>
 """
 
+WORDFENCE_SETTINGS_FILE = BASE / "wordfence-settings.json"
+
+def load_wordfence_settings():
+    defaults = {"enabled": False, "api_key_saved": False}
+    try:
+        if WORDFENCE_SETTINGS_FILE.exists():
+            data = json.loads(WORDFENCE_SETTINGS_FILE.read_text())
+            defaults["enabled"] = bool(data.get("enabled", False))
+            defaults["api_key_saved"] = bool(data.get("api_key"))
+    except Exception:
+        pass
+    return defaults
+
+def get_wordfence_api_key():
+    try:
+        if WORDFENCE_SETTINGS_FILE.exists():
+            data = json.loads(WORDFENCE_SETTINGS_FILE.read_text())
+            return data.get("api_key", "")
+    except Exception:
+        pass
+    return ""
+
+def save_wordfence_settings(enabled, api_key=None):
+    current_key = get_wordfence_api_key()
+    data = {"enabled": bool(enabled), "api_key": api_key if api_key else current_key}
+    tmp = WORDFENCE_SETTINGS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.chmod(tmp, 0o600)
+    tmp.replace(WORDFENCE_SETTINGS_FILE)
+    os.chmod(WORDFENCE_SETTINGS_FILE, 0o600)
+
+@APP.post("/admin/settings/wordfence/save")
+@admin_required
+def wordfence_settings_save():
+    try:
+        enabled = request.form.get("enabled") == "on"
+        api_key = request.form.get("api_key", "").strip()
+        save_wordfence_settings(enabled, api_key or None)
+        flash("Vulnerability scanning settings saved.")
+        log_action("wordfence_settings_update", "system", "success", f"enabled={enabled}")
+    except Exception as exc:
+        flash(f"Could not save vulnerability scanning settings: {exc}")
+        log_action("wordfence_settings_update", "system", "failed", str(exc))
+    return redirect(url_for("email_settings_page_v911"))
+
 @APP.get("/admin/email-settings")
 @admin_required
 def email_settings_page_v911():
     data = load_email_settings()
     password_saved = bool(data.get("smtp_password"))
     view = dict(data); view["smtp_password"] = ""
-    return render_template_string(EMAIL_SETTINGS_V911_HTML, e=view, password_saved=password_saved, current_theme=current_user_theme())
+    return render_template_string(EMAIL_SETTINGS_V911_HTML, e=view, password_saved=password_saved, current_theme=current_user_theme(), wordfence=load_wordfence_settings())
 
 @APP.get("/admin/backup-destination")
 @admin_required

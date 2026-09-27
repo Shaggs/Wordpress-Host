@@ -1,5 +1,13 @@
 # Changelog
 
+## 9.10.0
+- Renamed the "Email Settings" page to "Settings" (nav labels updated on Dashboard and Users pages; underlying route unchanged).
+- Added a Vulnerability Scanning section to Settings: a toggle to enable Wordfence vulnerability-feed matching, plus an optional API key (masked once saved, matching the SMTP/NAS password pattern).
+- Wired the actual Wordfence feed integration: when enabled, downloads and caches the feed globally (once per 24h, not per-site), matches installed core/plugin/theme versions against known CVE ranges, and shows matched CVEs (with severity and fixed-in version) ahead of the plain "Outdated" label in the per-site Version & Vulnerability Scan section.
+- Added a full security audit covering route authorization/CSRF, SQL injection/XSS surface, login rate-limiting, Docker isolation, host hardening, dependency CVEs, backup encryption, and audit log tamper-resistance.
+- Added hardening/ directory: a guided, safety-ordered host hardening process (SSH key setup verification, firewall + fail2ban via harden_firewall.sh, and an explicitly-gated SSH password-auth-disable step via harden_ssh_keys_only.sh) addressing the gaps the audit found. Deliberately does not statically open the SFTP/phpMyAdmin port ranges, since the platform already manages those dynamically per-session via its own temporary-access feature.
+- Retains all V9.9 post-migration vulnerability scanning/migration upload, V9.8 maintenance-mode admin bypass and action button toggles, V9.7 shared-theme-stylesheet, V9.6 theming/KPI-fix, V9.5 backup-destination/NAS, V9.4 temporary access, V9.3 port allocation and V9.2 authentication/MFA/SMTP functionality.
+
 ## 9.9.0
 - Added automatic version/vulnerability scanning after every migration: installed WordPress core, plugin and theme versions are checked against the latest available on wordpress.org, with results shown in a dedicated section on the site page's Security tab (separate from the ongoing baseline-based findings). Correctly distinguishes outdated components, plugins closed on wordpress.org, and custom/premium components not hosted there.
 - Added a web-based upload button for migration source files (.zip, .sql, .sql.gz) on the site page's Migration tab, since the SFTP jail is scoped to the wordpress/ folder and cannot reach the protected migration-source directory. Filenames are sanitised to prevent path traversal.
