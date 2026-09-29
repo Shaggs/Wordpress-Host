@@ -283,12 +283,36 @@ SITES_HTML = r"""
 .main{margin-left:224px;min-height:100vh}.top{height:66px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px}.top h1{margin:0;font-size:22px}.content{padding:22px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}.search{width:min(360px,45vw);background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px}.btn{border:0;border-radius:8px;padding:9px 12px;background:var(--blue);color:#fff;font-weight:750;cursor:pointer}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}.site{display:block;background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:13px;padding:18px;color:var(--text);transition:.15s}.site:hover{transform:translateY(-2px);border-color:#3b82f6}.head{display:flex;justify-content:space-between;gap:12px}.name{font-size:19px;font-weight:850}.domain{color:#82b6ff;margin-top:3px}.badge{font-size:11px;font-weight:800;padding:5px 8px;border-radius:7px;height:max-content}.live{background:#0c4a3a;color:#59e3a0}.bad{background:#541b28;color:#ff8299}.maint{background:#573513;color:#ffc66b}
 .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:18px}.stat{background:var(--field);border:1px solid var(--line);border-radius:8px;padding:10px}.stat b{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:15px;color:var(--muted);font-size:12px}.owner{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+label{display:block;font-weight:700;font-size:12px;margin-bottom:4px;color:var(--muted)}
 @media(max-width:760px){.sidebar{display:none}.main{margin-left:0}.content{padding:14px}}
 </style></head><body>
 <aside class="sidebar"><div class="brand">WP Host Manager<small>{{ platform_title }}</small></div><nav class="nav"><a href="/">⌂ Dashboard</a><a class="active" href="/sites">▦ Sites</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts</a>{% endif %}<a href="/#logs">▤ Logs</a></nav></aside>
 <div class="main"><header class="top"><h1>Sites</h1><a href="/">← Dashboard</a></header><main class="content">
 <div class="toolbar"><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"><div>{% if current_role in ['admin','user'] %}<button class="btn" type="button" onclick="const x=document.getElementById('newSite');x.style.display=x.style.display==='none'?'block':'none'">＋ New Site</button>{% endif %} &nbsp; {{ sites|length }} hosted site(s)</div></div>
-{% if current_role in ['admin','user'] %}<div id="newSite" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:16px"><h3>Create WordPress Site</h3><form method="post" action="/create"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px"><input name="site" required placeholder="Site ID"><input name="domain" required placeholder="Domain"><select name="memory"><option>1g</option><option>2g</option><option>4g</option></select><select name="cpus"><option>1.00</option><option>2.00</option><option>4.00</option></select><select name="db_memory"><option>512m</option><option>1g</option><option>2g</option></select><input name="wp_admin" value="admin" required><input name="wp_email" type="email" placeholder="Admin email" required><input name="wp_password" placeholder="Admin password (blank = generate)"><select name="auto_proxy"><option value="yes">Proxy + SSL</option><option value="no">WordPress only</option></select></div><p><button class="btn">Create Site</button></p></form></div>{% endif %}
+{% if current_role in ['admin','user'] %}<div id="newSite" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:16px"><h3>Create Site</h3><form method="post" action="/create"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px">
+<label>Site Type<select name="site_type" id="siteType" onchange="toggleSiteType()"><option value="wordpress">WordPress</option><option value="html_php">HTML / PHP</option></select></label>
+<label>Site ID<input name="site" required placeholder="Site ID"></label>
+<label>Domain<input name="domain" required placeholder="Domain"></label>
+<label>Memory<select name="memory"><option>1g</option><option>2g</option><option>4g</option></select></label>
+<label>CPU<select name="cpus"><option>1.00</option><option>2.00</option><option>4.00</option></select></label>
+<label>Database Memory<select name="db_memory"><option>512m</option><option>1g</option><option>2g</option></select></label>
+<label class="wpOnly">Admin Username<input name="wp_admin" value="admin" required></label>
+<label class="wpOnly">Admin Email<input name="wp_email" type="email" placeholder="Admin email" required></label>
+<label class="wpOnly">Admin Password<input name="wp_password" placeholder="Admin password (blank = generate)"></label>
+<label class="phpOnly" style="display:none">Database<select name="include_db"><option value="no">No database</option><option value="yes">Include database</option></select></label>
+<label>Proxy / SSL<select name="auto_proxy"><option value="yes">Proxy + SSL</option><option value="no">No proxy (HTTP only)</option></select></label>
+</div><p><button class="btn">Create Site</button></p></form></div>
+<script>
+function toggleSiteType(){
+  var t = document.getElementById('siteType').value;
+  document.querySelectorAll('.wpOnly').forEach(function(el){
+    el.style.display = t==='wordpress' ? '' : 'none';
+    var field = el.querySelector('input,select');
+    if(field) field.required = (t==='wordpress');
+  });
+  document.querySelectorAll('.phpOnly').forEach(function(el){el.style.display = t==='html_php' ? '' : 'none';});
+}
+</script>{% endif %}
 <div class="grid" id="sitesGrid">
 {% for s in sites %}
 <a class="site" href="/site/{{ s.site }}" data-find="{{ (s.site ~ ' ' ~ s.domain ~ ' ' ~ s.status ~ ' ' ~ s.owner_name)|lower }}">
@@ -1098,9 +1122,9 @@ def npm_create_certificate(domain):
         raise RuntimeError(f"SSL request failed: HTTP {r.status_code}: {r.text[:500]}")
     return r.json()
 
-def npm_create_proxy(site, domain, certificate_id=0):
+def npm_create_proxy(site, domain, certificate_id=0, forward_host=None):
     existing = npm_existing_proxy(domain)
-    desired_host = f"{site}-wp"
+    desired_host = forward_host or f"{site}-wp"
     if existing:
         if existing.get("forward_host") != desired_host or int(existing.get("forward_port", 80)) != 80 or existing.get("forward_scheme") != "http":
             proxy_id = existing.get("id")
@@ -1138,7 +1162,7 @@ def npm_create_proxy(site, domain, certificate_id=0):
     payload = {
         "domain_names": [domain],
         "forward_scheme": "http",
-        "forward_host": f"{site}-wp",
+        "forward_host": desired_host,
         "forward_port": 80,
         "access_list_id": 0,
         "certificate_id": int(certificate_id or 0),
@@ -1219,9 +1243,9 @@ def resolve_domain(domain):
     except Exception:
         return []
 
-def provision_proxy_ssl(site, domain):
+def provision_proxy_ssl(site, domain, forward_host=None):
     wait_for_npm()
-    proxy = npm_create_proxy(site, domain, 0)
+    proxy = npm_create_proxy(site, domain, 0, forward_host=forward_host)
     cert = npm_create_certificate(domain)
     cert_id = cert.get("id")
     if not cert_id:
@@ -2984,9 +3008,10 @@ def list_sites():
         if not meta:
             continue
         site = meta.get("site", d.name)
-        wp_name = f"{site}-wp"
+        site_type = meta.get("type", "wordpress")
+        web_name = f"{site}-web" if site_type == "html_php" else f"{site}-wp"
         try:
-            c = docker_client.containers.get(wp_name)
+            c = docker_client.containers.get(web_name)
             c.reload()
             status = c.status
             attrs = c.attrs
@@ -3003,7 +3028,7 @@ def list_sites():
             except Exception:
                 pass
             wp_version = "-"
-            if status == "running":
+            if site_type != "html_php" and status == "running":
                 try:
                     ex = c.exec_run(["php","-r","include '/var/www/html/wp-includes/version.php'; echo $wp_version;"])
                     if ex.exit_code == 0:
@@ -3328,6 +3353,160 @@ networks:
     (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
     return wp_password, meta
 
+def create_html_php_site(site, domain, memory, cpus, include_db, db_memory, auto_proxy=True):
+    site = site.lower().strip()
+    domain = domain.lower().strip()
+    if not SITE_RE.match(site):
+        raise ValueError("Site ID must use lowercase letters, numbers and hyphens only (max 40).")
+    if not DOMAIN_RE.match(domain):
+        raise ValueError("Domain does not look valid.")
+    if not valid_memory(memory) or (include_db and not valid_memory(db_memory)):
+        raise ValueError("Invalid memory setting.")
+    if cpus not in {"0.50","1.00","2.00","4.00"}:
+        raise ValueError("Invalid CPU setting.")
+
+    site_dir = SITES / site
+    if site_dir.exists():
+        raise ValueError("That Site ID already exists.")
+
+    site_dir.mkdir(parents=True)
+    (site_dir / "site").mkdir()
+
+    env_lines = [f"SITE={site}", f"DOMAIN={domain}"]
+    db_name = db_user = db_pass = None
+    if include_db:
+        db_name = "app"
+        db_user = "app"
+        db_pass = secrets.token_urlsafe(32)
+        db_root = secrets.token_urlsafe(40)
+        env_lines += [
+            f"DB_NAME={db_name}",
+            f"DB_USER={db_user}",
+            f"DB_PASSWORD={db_pass}",
+            f"DB_ROOT_PASSWORD={db_root}",
+            f"DB_MEMORY={db_memory}",
+        ]
+    env_lines += [f"WEB_MEMORY={memory}", f"WEB_CPUS={cpus}"]
+    (site_dir / ".env").write_text("\n".join(env_lines) + "\n")
+    os.chmod(site_dir / ".env", 0o600)
+
+    compose_parts = ["services:"]
+    if include_db:
+        compose_parts.append(f"""  db:
+    image: mariadb:11
+    container_name: {site}-db
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      MARIADB_DATABASE: ${{DB_NAME}}
+      MARIADB_USER: ${{DB_USER}}
+      MARIADB_PASSWORD: ${{DB_PASSWORD}}
+      MARIADB_ROOT_PASSWORD: ${{DB_ROOT_PASSWORD}}
+    volumes:
+      - db_data:/var/lib/mysql
+    mem_limit: ${{DB_MEMORY}}
+    cpus: 0.50
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+""")
+    web_block = f"""  web:
+    image: php:8.3-apache
+    container_name: {site}-web
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+"""
+    if include_db:
+        web_block += """    depends_on:
+      db:
+        condition: service_healthy
+"""
+    web_block += f"""    volumes:
+      - ./site:/var/www/html
+    mem_limit: ${{WEB_MEMORY}}
+    cpus: ${{WEB_CPUS}}
+    networks:
+      - internal
+      - wp-proxy
+"""
+    compose_parts.append(web_block)
+    if include_db:
+        compose_parts.append("""volumes:
+  db_data:
+""")
+    compose_parts.append(f"""networks:
+  internal:
+    internal: true
+  wp-proxy:
+    external: true
+    name: {PROXY_NETWORK}
+""")
+    (site_dir / "compose.yml").write_text("\n".join(compose_parts))
+
+    meta = dict(site=site, domain=domain, type="html_php", has_database=include_db,
+                memory=memory, cpus=cpus, db_memory=db_memory if include_db else None,
+                created=datetime.now().isoformat())
+    (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
+
+    run(["docker","compose","pull"], cwd=site_dir)
+    run(["docker","compose","up","-d"], cwd=site_dir)
+
+    for _ in range(60):
+        try:
+            c = docker_client.containers.get(f"{site}-web")
+            c.reload()
+            if c.status == "running":
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+
+    # A minimal placeholder index so the site isn\'t blank / a directory
+    # listing before the client uploads their real files.
+    index_path = site_dir / "site" / "index.php"
+    if not any((site_dir / "site").iterdir()):
+        index_path.write_text(
+            "<?php // Placeholder - replace with your site\'s files. ?>\n"
+            "<!doctype html><html><body style=\"font-family:sans-serif;padding:40px;color:#334\">"
+            "<h1>Site created</h1><p>Upload your HTML/PHP files to replace this page.</p></body></html>\n"
+        )
+
+    if include_db:
+        try:
+            pma = ensure_phpmyadmin(site)
+            meta["phpmyadmin_port"] = pma["port"]
+            meta["phpmyadmin_status"] = "provisioned"
+        except Exception as exc:
+            meta["phpmyadmin_status"] = "failed"
+            meta["phpmyadmin_error"] = str(exc)
+
+    if auto_proxy:
+        meta["dns_addresses"] = resolve_domain(domain)
+        try:
+            provisioned = provision_proxy_ssl(site, domain, forward_host=f"{site}-web")
+            meta.update(provisioned)
+            meta["proxy_status"] = "provisioned"
+        except Exception as exc:
+            meta["proxy_status"] = "failed"
+            meta["proxy_error"] = str(exc)
+    else:
+        meta["proxy_status"] = "not_requested"
+
+    (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
+    return meta
+
 def backup_site(site):
     site_dir = SITES / site
     if not site_dir.exists():
@@ -3336,24 +3515,30 @@ def backup_site(site):
     dest.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
+    meta = site_metadata(site_dir) or {}
+    site_type = meta.get("type", "wordpress")
+    web_dir_name = "site" if site_type == "html_php" else "wordpress"
+    has_db = site_type != "html_php" or meta.get("has_database", False)
+
     env = {}
     for line in (site_dir/".env").read_text().splitlines():
         if "=" in line:
             k,v=line.split("=",1); env[k]=v
 
-    dbfile = dest / f"{stamp}-database.sql"
-    with dbfile.open("wb") as f:
-        p = subprocess.run(
-            ["docker","exec",f"{site}-db","mariadb-dump",
-             "-u",env["DB_USER"],f"-p{env['DB_PASSWORD']}",env["DB_NAME"]],
-            stdout=f, stderr=subprocess.PIPE, timeout=600
-        )
-        if p.returncode != 0:
-            raise RuntimeError(p.stderr.decode(errors="ignore"))
+    if has_db:
+        dbfile = dest / f"{stamp}-database.sql"
+        with dbfile.open("wb") as f:
+            p = subprocess.run(
+                ["docker","exec",f"{site}-db","mariadb-dump",
+                 "-u",env["DB_USER"],f"-p{env['DB_PASSWORD']}",env["DB_NAME"]],
+                stdout=f, stderr=subprocess.PIPE, timeout=600
+            )
+            if p.returncode != 0:
+                raise RuntimeError(p.stderr.decode(errors="ignore"))
+        run(["gzip","-f",str(dbfile)])
 
     archive = dest / f"{stamp}.tar.gz"
-    run(["tar","-czf",str(archive),"-C",str(site_dir),"wordpress","compose.yml",".env","site.json"], timeout=1200)
-    run(["gzip","-f",str(dbfile)])
+    run(["tar","-czf",str(archive),"-C",str(site_dir),web_dir_name,"compose.yml",".env","site.json"], timeout=1200)
     try:
         ok, detail = replicate_backup_set_to_nas(site, stamp)
         if load_backup_storage().get("server"):
@@ -6299,25 +6484,44 @@ def user_delete(username):
 @APP.post("/create")
 @operator_required
 def create():
+    site_type = request.form.get("site_type", "wordpress")
     try:
-        password, meta = create_site(
-            request.form.get("site",""),
-            request.form.get("domain",""),
-            request.form.get("memory","1g"),
-            request.form.get("cpus","1.00"),
-            request.form.get("db_memory","512m"),
-            request.form.get("wp_admin","admin"),
-            request.form.get("wp_email",""),
-            request.form.get("wp_password",""),
-            request.form.get("auto_proxy","yes") == "yes",
-        )
-        log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
-        if meta.get("proxy_status") == "provisioned":
-            flash(f"Site created and HTTPS provisioned. WordPress admin password: {password} — save this now.")
-        elif meta.get("proxy_status") == "failed":
-            flash(f"Site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}. WordPress admin password: {password}")
+        if site_type == "html_php":
+            meta = create_html_php_site(
+                request.form.get("site",""),
+                request.form.get("domain",""),
+                request.form.get("memory","1g"),
+                request.form.get("cpus","1.00"),
+                request.form.get("include_db","no") == "yes",
+                request.form.get("db_memory","512m"),
+                request.form.get("auto_proxy","yes") == "yes",
+            )
+            log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
+            if meta.get("proxy_status") == "provisioned":
+                flash("Site created and HTTPS provisioned. Upload your files via SFTP to replace the placeholder page.")
+            elif meta.get("proxy_status") == "failed":
+                flash(f"Site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}. Upload your files via SFTP to replace the placeholder page.")
+            else:
+                flash("Site created. Upload your files via SFTP to replace the placeholder page.")
         else:
-            flash(f"Site created. WordPress admin password: {password} — save this now.")
+            password, meta = create_site(
+                request.form.get("site",""),
+                request.form.get("domain",""),
+                request.form.get("memory","1g"),
+                request.form.get("cpus","1.00"),
+                request.form.get("db_memory","512m"),
+                request.form.get("wp_admin","admin"),
+                request.form.get("wp_email",""),
+                request.form.get("wp_password",""),
+                request.form.get("auto_proxy","yes") == "yes",
+            )
+            log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
+            if meta.get("proxy_status") == "provisioned":
+                flash(f"Site created and HTTPS provisioned. WordPress admin password: {password} — save this now.")
+            elif meta.get("proxy_status") == "failed":
+                flash(f"Site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}. WordPress admin password: {password}")
+            else:
+                flash(f"Site created. WordPress admin password: {password} — save this now.")
     except Exception as e:
         log_action("site_create", request.form.get("site",""), "failed", str(e))
         flash(f"Create failed: {e}")
