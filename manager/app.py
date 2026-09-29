@@ -281,14 +281,14 @@ SITES_HTML = r"""
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
 .sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:19px;font-weight:850;margin:6px 8px 22px}.brand small{display:block;color:var(--muted);font-size:12px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a.active,.nav a:hover{background:#1d4ed8;color:#fff}
 .main{margin-left:224px;min-height:100vh}.top{height:66px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px}.top h1{margin:0;font-size:22px}.content{padding:22px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}.search{width:min(360px,45vw);background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px}.btn{border:0;border-radius:8px;padding:9px 12px;background:var(--blue);color:#fff;font-weight:750;cursor:pointer}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}.site{display:block;background:linear-gradient(180deg,#101e31,#0c1828);border:1px solid var(--line);border-radius:13px;padding:18px;color:var(--text);transition:.15s}.site:hover{transform:translateY(-2px);border-color:#3b82f6}.head{display:flex;justify-content:space-between;gap:12px}.name{font-size:19px;font-weight:850}.domain{color:#82b6ff;margin-top:3px}.badge{font-size:11px;font-weight:800;padding:5px 8px;border-radius:7px;height:max-content}.live{background:#0c4a3a;color:#59e3a0}.bad{background:#541b28;color:#ff8299}.maint{background:#573513;color:#ffc66b}
-.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:18px}.stat{background:#0a1524;border:1px solid #203249;border-radius:8px;padding:10px}.stat b{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:15px;color:var(--muted);font-size:12px}.owner{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}.site{display:block;background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:13px;padding:18px;color:var(--text);transition:.15s}.site:hover{transform:translateY(-2px);border-color:#3b82f6}.head{display:flex;justify-content:space-between;gap:12px}.name{font-size:19px;font-weight:850}.domain{color:#82b6ff;margin-top:3px}.badge{font-size:11px;font-weight:800;padding:5px 8px;border-radius:7px;height:max-content}.live{background:#0c4a3a;color:#59e3a0}.bad{background:#541b28;color:#ff8299}.maint{background:#573513;color:#ffc66b}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:18px}.stat{background:var(--field);border:1px solid var(--line);border-radius:8px;padding:10px}.stat b{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:15px;color:var(--muted);font-size:12px}.owner{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:760px){.sidebar{display:none}.main{margin-left:0}.content{padding:14px}}
 </style></head><body>
 <aside class="sidebar"><div class="brand">WP Host Manager<small>{{ platform_title }}</small></div><nav class="nav"><a href="/">⌂ Dashboard</a><a class="active" href="/sites">▦ Sites</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts</a>{% endif %}<a href="/#logs">▤ Logs</a></nav></aside>
 <div class="main"><header class="top"><h1>Sites</h1><a href="/">← Dashboard</a></header><main class="content">
 <div class="toolbar"><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"><div>{% if current_role in ['admin','user'] %}<button class="btn" type="button" onclick="const x=document.getElementById('newSite');x.style.display=x.style.display==='none'?'block':'none'">＋ New Site</button>{% endif %} &nbsp; {{ sites|length }} hosted site(s)</div></div>
-{% if current_role in ['admin','user'] %}<div id="newSite" style="display:none;background:#0f1b2d;border:1px solid #263850;border-radius:11px;padding:16px;margin-bottom:16px"><h3>Create WordPress Site</h3><form method="post" action="/create"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px"><input name="site" required placeholder="Site ID"><input name="domain" required placeholder="Domain"><select name="memory"><option>1g</option><option>2g</option><option>4g</option></select><select name="cpus"><option>1.00</option><option>2.00</option><option>4.00</option></select><select name="db_memory"><option>512m</option><option>1g</option><option>2g</option></select><input name="wp_admin" value="admin" required><input name="wp_email" type="email" placeholder="Admin email" required><input name="wp_password" placeholder="Admin password (blank = generate)"><select name="auto_proxy"><option value="yes">Proxy + SSL</option><option value="no">WordPress only</option></select></div><p><button class="btn">Create Site</button></p></form></div>{% endif %}
+{% if current_role in ['admin','user'] %}<div id="newSite" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:16px"><h3>Create WordPress Site</h3><form method="post" action="/create"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px"><input name="site" required placeholder="Site ID"><input name="domain" required placeholder="Domain"><select name="memory"><option>1g</option><option>2g</option><option>4g</option></select><select name="cpus"><option>1.00</option><option>2.00</option><option>4.00</option></select><select name="db_memory"><option>512m</option><option>1g</option><option>2g</option></select><input name="wp_admin" value="admin" required><input name="wp_email" type="email" placeholder="Admin email" required><input name="wp_password" placeholder="Admin password (blank = generate)"><select name="auto_proxy"><option value="yes">Proxy + SSL</option><option value="no">WordPress only</option></select></div><p><button class="btn">Create Site</button></p></form></div>{% endif %}
 <div class="grid" id="sitesGrid">
 {% for s in sites %}
 <a class="site" href="/site/{{ s.site }}" data-find="{{ (s.site ~ ' ' ~ s.domain ~ ' ' ~ s.status ~ ' ' ~ s.owner_name)|lower }}">
@@ -308,7 +308,7 @@ SITE_HTML = r"""
 <title>{{ site.domain }} · WP Host Manager</title>
 <link rel="stylesheet" href="/static/theme.css">
 <style>
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}a{color:#60a5fa;text-decoration:none}.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:18px;font-weight:850;margin:5px 8px 22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a.active,.nav a:hover{background:#173c7a;color:#fff}.main{margin-left:224px;padding:22px;min-height:100vh}.back{display:inline-block;margin-bottom:15px;color:#d6e0ed}.hero{display:grid;grid-template-columns:1fr 370px;gap:16px}.card{background:linear-gradient(180deg,#101e31,#0d192a);border:1px solid var(--line);border-radius:12px;padding:17px}.title{font-size:27px;font-weight:900;margin:0 0 5px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}.chip{background:#17263b;padding:6px 9px;border-radius:7px;font-size:12px}.good{color:#4ade80}.bad{color:#fb7185}.warn{color:#fbbf24}.statusline{font-size:18px;font-weight:850}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}.metric{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px}.metric b{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.metric strong{font-size:20px}.actionsbar{display:grid;grid-template-columns:1.2fr .8fr auto;gap:20px;align-items:end}.sectiontitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}.buttonrow{display:flex;gap:9px;flex-wrap:wrap}.btn{border:1px solid #2f5ea5;background:#12294b;color:#fff;border-radius:8px;padding:10px 16px;font-weight:800;cursor:pointer}.btn.green{background:#0a493b;border-color:#087e61}.btn.orange{background:#5b360e;border-color:#b5670b}.btn.red{background:#561b29;border-color:#c62b43}.btn.purple{background:#34205b;border-color:#7241b5}.access{display:flex;gap:9px}.morewrap{position:relative}.morepanel{display:none;position:absolute;right:0;top:50px;width:760px;z-index:20;background:#0b1727;border:1px solid #31506f;border-radius:12px;padding:13px;box-shadow:0 18px 50px #0009}.morewrap.open .morepanel{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.moreitem{border:1px solid var(--line);border-radius:9px;padding:10px}.moreitem p{font-size:11px;color:var(--muted);min-height:42px}.moreitem .btn{width:100%;padding:8px}.tabs{display:flex;gap:4px;margin-top:17px;border-bottom:1px solid var(--line);overflow-x:auto}.tab{padding:11px 15px;color:#b8c5d6;cursor:pointer;border-bottom:2px solid transparent}.tab.active{color:#60a5fa;border-color:#3b82f6}.tabpane{display:none;padding-top:16px}.tabpane.active{display:block}.info{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.info .card .row{display:flex;justify-content:space-between;gap:12px;margin:9px 0;font-size:13px}.table{width:100%;border-collapse:collapse;font-size:12px}.table th,.table td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}.table th{color:#93c5fd}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.note{white-space:pre-wrap;color:#cad5e3}.fields{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.fields input,.fields textarea{width:100%;background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:9px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}a{color:#60a5fa;text-decoration:none}.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:18px;font-weight:850;margin:5px 8px 22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a.active,.nav a:hover{background:#173c7a;color:#fff}.main{margin-left:224px;padding:22px;min-height:100vh}.back{display:inline-block;margin-bottom:15px;color:#d6e0ed}.hero{display:grid;grid-template-columns:1fr 370px;gap:16px}.card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:12px;padding:17px}.title{font-size:27px;font-weight:900;margin:0 0 5px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}.chip{background:#17263b;padding:6px 9px;border-radius:7px;font-size:12px}.good{color:#4ade80}.bad{color:#fb7185}.warn{color:#fbbf24}.statusline{font-size:18px;font-weight:850}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}.metric{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px}.metric b{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.metric strong{font-size:20px}.actionsbar{display:grid;grid-template-columns:1.2fr .8fr auto;gap:20px;align-items:end}.sectiontitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}.buttonrow{display:flex;gap:9px;flex-wrap:wrap}.btn{border:1px solid #2f5ea5;background:#12294b;color:#fff;border-radius:8px;padding:10px 16px;font-weight:800;cursor:pointer}.btn.green{background:#0a493b;border-color:#087e61}.btn.orange{background:#5b360e;border-color:#b5670b}.btn.red{background:#561b29;border-color:#c62b43}.btn.purple{background:#34205b;border-color:#7241b5}.access{display:flex;gap:9px}.morewrap{position:relative}.morepanel{display:none;position:absolute;right:0;top:50px;width:760px;z-index:20;background:var(--field);border:1px solid var(--line);border-radius:12px;padding:13px;box-shadow:0 18px 50px #0009}.morewrap.open .morepanel{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.moreitem{border:1px solid var(--line);border-radius:9px;padding:10px}.moreitem p{font-size:11px;color:var(--muted);min-height:42px}.moreitem .btn{width:100%;padding:8px}.tabs{display:flex;gap:4px;margin-top:17px;border-bottom:1px solid var(--line);overflow-x:auto}.tab{padding:11px 15px;color:#b8c5d6;cursor:pointer;border-bottom:2px solid transparent}.tab.active{color:#60a5fa;border-color:#3b82f6}.tabpane{display:none;padding-top:16px}.tabpane.active{display:block}.info{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.info .card .row{display:flex;justify-content:space-between;gap:12px;margin:9px 0;font-size:13px}.table{width:100%;border-collapse:collapse;font-size:12px}.table th,.table td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}.table th{color:#93c5fd}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.note{white-space:pre-wrap;color:#cad5e3}.fields{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.fields input,.fields textarea{width:100%;background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:9px}
 @media(max-width:1150px){.hero{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.actionsbar{grid-template-columns:1fr}.morepanel{position:fixed;left:10%;right:10%;width:auto;top:20%}.info{grid-template-columns:1fr}}@media(max-width:760px){.sidebar{display:none}.main{margin-left:0;padding:13px}.metrics{grid-template-columns:1fr}}
 </style></head><body>
 <aside class="sidebar"><div class="brand">WP Host Manager</div><nav class="nav"><a href="/">⌂ Dashboard</a><a class="active" href="/sites">▦ Sites</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_count %}<span class="bad">({{ security_count }})</span>{% endif %}</a>{% endif %}<a href="/#logs">▤ Logs</a></nav></aside>
@@ -4541,7 +4541,7 @@ body{
     max-width:480px;
     margin:80px auto;
     background:#0f1b2d;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:12px;
     padding:26px
 }
@@ -4551,7 +4551,7 @@ input{
     padding:12px;
     margin:8px 0 15px;
     background:#091522;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:8px;
     color:white;
     font-size:18px
@@ -4568,7 +4568,7 @@ button{
 }
 .flash{
     background:#162941;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:8px;
     padding:10px;
     margin-bottom:12px
@@ -4642,7 +4642,7 @@ body{
     max-width:650px;
     margin:50px auto;
     background:#0f1b2d;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:12px;
     padding:26px
 }
@@ -4656,7 +4656,7 @@ body{
 }
 .secret{
     background:#091522;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:8px;
     padding:12px;
     word-break:break-all;
@@ -4668,7 +4668,7 @@ input{
     padding:12px;
     margin:8px 0 15px;
     background:#091522;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:8px;
     color:white;
     font-size:18px
@@ -4685,7 +4685,7 @@ button{
 }
 .flash{
     background:#162941;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:8px;
     padding:10px;
     margin-bottom:12px
@@ -4780,13 +4780,13 @@ body{
     max-width:650px;
     margin:50px auto;
     background:#0f1b2d;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:12px;
     padding:26px
 }
 .codes{
     background:#091522;
-    border:1px solid #263850;
+    border:1px solid var(--line);
     border-radius:8px;
     padding:18px;
     margin:18px 0
@@ -5603,7 +5603,7 @@ def port_manager():
     return render_template_string(r"""
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Port Manager · {{ platform_title }}</title>
-<style>:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--red:#dc2626;--amber:#d97706}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:1180px;margin:40px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}.table{width:100%;border-collapse:collapse}.table th,.table td{text-align:left;padding:11px;border-bottom:1px solid var(--line);vertical-align:middle}.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:800}.RUNNING{background:#064e3b}.RESERVED{background:#374151}.UNASSIGNED{background:#374151}.CONFLICT{background:#7f1d1d}.btn{border:0;border-radius:7px;padding:8px 12px;color:#fff;font-weight:800;cursor:pointer;background:var(--blue)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.ranges{display:grid;grid-template-columns:1fr 1fr;gap:12px}.range{background:#091522;border:1px solid var(--line);border-radius:10px;padding:14px}@media(max-width:800px){.table{font-size:13px}.ranges{grid-template-columns:1fr}.table th:nth-child(5),.table td:nth-child(5){display:none}}</style></head>
+<style>:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669;--red:#dc2626;--amber:#d97706}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:1180px;margin:40px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}.table{width:100%;border-collapse:collapse}.table th,.table td{text-align:left;padding:11px;border-bottom:1px solid var(--line);vertical-align:middle}.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:800}.RUNNING{background:#064e3b}.RESERVED{background:#374151}.UNASSIGNED{background:#374151}.CONFLICT{background:#7f1d1d}.btn{border:0;border-radius:7px;padding:8px 12px;color:#fff;font-weight:800;cursor:pointer;background:var(--blue)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.ranges{display:grid;grid-template-columns:1fr 1fr;gap:12px}.range{background:var(--field);border:1px solid var(--line);border-radius:10px;padding:14px}@media(max-width:800px){.table{font-size:13px}.ranges{grid-template-columns:1fr}.table th:nth-child(5),.table td:nth-child(5){display:none}}</style></head>
 <body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/sites">Sites</a></p><h1>Management Port Manager</h1><p class="muted">Each site keeps its own reserved SFTP and phpMyAdmin host ports. Reservations are not reused by another site until that site is deleted.</p>
 {% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}
 <div class="card"><div class="ranges"><div class="range"><b>SFTP range</b><br>{{ sftp_start }}–{{ sftp_end }}</div><div class="range"><b>phpMyAdmin range</b><br>{{ pma_start }}–{{ pma_end }}</div></div></div>
@@ -5698,13 +5698,13 @@ def branding_settings():
 <style>
 body{margin:0;background:#07111f;color:#e7eef8;font-family:Inter,system-ui,Segoe UI,sans-serif}
 .wrap{max-width:820px;margin:44px auto;padding:0 18px}
-.card{background:#0f1b2d;border:1px solid #263850;border-radius:14px;padding:24px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px}
 h1{margin-top:0}.muted{color:#91a3bb}
 label{display:block;font-weight:750;margin-top:18px}
-input{width:100%;box-sizing:border-box;margin-top:6px;padding:11px;background:#091522;border:1px solid #263850;border-radius:8px;color:#fff}
+input{width:100%;box-sizing:border-box;margin-top:6px;padding:11px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}
 .btn{display:inline-block;margin-top:22px;border:0;border-radius:8px;padding:10px 16px;background:#2563eb;color:#fff;font-weight:800;cursor:pointer;text-decoration:none}
 .back{color:#82b6ff;text-decoration:none;display:inline-block;margin-bottom:14px}
-.preview{margin-top:22px;background:#091522;border:1px solid #263850;border-radius:10px;padding:16px}
+.preview{margin-top:22px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:16px}
 </style>
 </head>
 <body><div class="wrap">
@@ -6024,11 +6024,22 @@ def change_password():
 BACKUP_DESTINATION_HTML = """
 <!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Backup Destination · {{ platform_title }}</title>
 <link rel="stylesheet" href="/static/theme.css">
-<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--green);margin-top:16px}.tag{display:inline-block;padding:3px 7px;border-radius:6px;background:#17334b;font-size:11px}@media(max-width:700px){table{font-size:12px}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Backup Destination</h1>
+<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--green);margin-top:16px}.tag{display:inline-block;padding:3px 7px;border-radius:6px;background:#17334b;color:#dbeafe;font-size:11px}label{display:block;font-weight:700;margin-bottom:5px;font-size:13px}input,select{width:100%;padding:10px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}.nasgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px 16px;margin-top:10px}@media(max-width:700px){table{font-size:12px}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Backup Destination</h1>
 {% with messages = get_flashed_messages() %}{% for m in messages %}<div class="card">{{ m }}</div>{% endfor %}{% endwith %}
 <section class="card"><h2>Local Storage Location</h2><p class="muted">Choose which mounted disk stores local backups — your primary array, a second RAID array once built, or any other mounted volume.</p><form method="post" action="/admin/backup-destination"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><table><tr><th></th><th>Mountpoint</th><th>Device</th><th>Filesystem</th><th>Free space</th></tr>{% for d in destinations %}<tr><td><input type="radio" name="mountpoint" value="{{ d.mountpoint }}" {{ 'checked' if d.mountpoint == current_mountpoint else '' }} required style="width:auto"></td><td>{{ d.mountpoint }}{% if d.mountpoint == current_mountpoint %} <span class="tag">current</span>{% endif %}</td><td>{{ d.device }}</td><td>{{ d.fstype }}</td><td>{{ d.free }}</td></tr>{% else %}<tr><td colspan="5">No eligible mounted disks detected.</td></tr>{% endfor %}</table>
-<section class="card"><h2>Network NAS (secondary copy)</h2><p class="muted">Every local backup is copied here automatically once it's created. A NAS outage never blocks or breaks the local backup — it just skips replication until the NAS is back.</p>{% if nas.configured %}<p><b>Status:</b> {% if nas.mounted %}<span class="tag" style="background:#0d3b23;color:#4ade80">CONNECTED</span>{% else %}<span class="tag" style="background:#3b0d0d;color:#fb7185">DISCONNECTED</span>{% endif %} &nbsp; //{{ nas.server }}/{{ nas.share }} → {{ nas.mount_point }} &nbsp; free: {{ nas.free }}</p>{% endif %}<form method="post" action="/admin/backup-destination/nas/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Name<input name="name" value="{{ nas.name or 'Network NAS' }}" maxlength="60"></label><label>NAS address<input name="server" value="{{ nas.server }}" placeholder="192.168.1.20" required></label><label>Share<input name="share" value="{{ nas.share }}" placeholder="WordPressBackups" required></label><label>Username<input name="username" value="{{ nas.username }}" autocomplete="off" required></label><label>Password<input name="password" type="password" placeholder="{{ 'Saved — leave blank to keep current password' if nas.password_saved else 'SMB password' }}" autocomplete="new-password"></label><label>Mount name<input name="mount_name" value="{{ nas.mount_name or 'nas' }}" pattern="[A-Za-z0-9_-]+" required></label><label>NAS retention (backup sets per site)<input name="retention" type="number" min="1" max="365" value="{{ nas.retention or 30 }}"></label><button class="btn" name="mode" value="save_mount">Save &amp; Mount</button> <button class="btn" name="mode" value="save" style="background:var(--blue)">Save Only</button></form>{% if nas.configured %}<div style="margin-top:12px;display:flex;gap:8px"><form method="post" action="/admin/backup-destination/nas/test"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:var(--blue)">Test</button></form><form method="post" action="/admin/backup-destination/nas/mount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Mount / Remount</button></form><form method="post" action="/admin/backup-destination/nas/unmount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#d97706">Unmount</button></form></div>{% endif %}</section>
 <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px"><input type="checkbox" name="migrate" style="width:auto"> Move existing backups from the current location to the new one</label><button class="btn">Save Destination</button></form></section>
+<section class="card"><h2>Network NAS (secondary copy)</h2><p class="muted">Every local backup is copied here automatically once it's created. A NAS outage never blocks or breaks the local backup — it just skips replication until the NAS is back.</p>{% if nas.configured %}<p><b>Status:</b> {% if nas.mounted %}<span class="tag" style="background:#0d3b23;color:#4ade80">CONNECTED</span>{% else %}<span class="tag" style="background:#3b0d0d;color:#fb7185">DISCONNECTED</span>{% endif %} &nbsp; //{{ nas.server }}/{{ nas.share }} → {{ nas.mount_point }} &nbsp; free: {{ nas.free }}</p>{% endif %}<form method="post" action="/admin/backup-destination/nas/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="nasgrid">
+<label>Name<input name="name" value="{{ nas.name or 'Network NAS' }}" maxlength="60"></label>
+<label>NAS address<input name="server" value="{{ nas.server }}" placeholder="192.168.1.20" required></label>
+<label>Share<input name="share" value="{{ nas.share }}" placeholder="WordPressBackups" required></label>
+<label>Username<input name="username" value="{{ nas.username }}" autocomplete="off" required></label>
+<label>Password<input name="password" type="password" placeholder="{{ 'Saved — leave blank to keep current password' if nas.password_saved else 'SMB password' }}" autocomplete="new-password"></label>
+<label>Mount name<input name="mount_name" value="{{ nas.mount_name or 'nas' }}" pattern="[A-Za-z0-9_-]+" required></label>
+<label>NAS retention (backup sets per site)<input name="retention" type="number" min="1" max="365" value="{{ nas.retention or 30 }}"></label>
+</div>
+<p><button class="btn" name="mode" value="save_mount">Save &amp; Mount</button> <button class="btn" name="mode" value="save" style="background:var(--blue)">Save Only</button></p>
+</form>{% if nas.configured %}<div style="margin-top:12px;display:flex;gap:8px"><form method="post" action="/admin/backup-destination/nas/test"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:var(--blue)">Test</button></form><form method="post" action="/admin/backup-destination/nas/mount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Mount / Remount</button></form><form method="post" action="/admin/backup-destination/nas/unmount"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#d97706">Unmount</button></form></div>{% endif %}</section>
 </div></body></html>
 """
 

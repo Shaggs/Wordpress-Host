@@ -74,7 +74,7 @@ echo
 echo "[1/9] Installing OS dependencies..."
 apt-get update
 apt-get install -y \
-    ca-certificates curl gnupg openssl \
+    ca-certificates curl gnupg openssl unzip \
     python3 python3-venv python3-pip \
     jq rsync gzip ufw
 
@@ -101,6 +101,20 @@ DOCKERREPO
     apt-get install -y \
         docker-ce docker-ce-cli containerd.io \
         docker-buildx-plugin docker-compose-plugin
+fi
+
+echo "Relocating Docker and containerd data to $PLATFORM_DIR/docker-data..."
+mkdir -p "$PLATFORM_DIR/docker-data/containerd"
+
+mkdir -p /etc/docker
+cat >/etc/docker/daemon.json <<DOCKERDAEMON
+{
+  "data-root": "$PLATFORM_DIR/docker-data"
+}
+DOCKERDAEMON
+
+if [[ -f /etc/containerd/config.toml ]] && ! grep -q '^root = ' /etc/containerd/config.toml; then
+    sed -i "s|^#root = \"/var/lib/containerd\"|root = \"$PLATFORM_DIR/docker-data/containerd\"|" /etc/containerd/config.toml
 fi
 
 systemctl enable --now docker
@@ -173,12 +187,12 @@ WP_DASHBOARD_PORT=${DASHBOARD_PORT}
 
 WP_DASHBOARD_USER=${DASHBOARD_USER}
 WP_DASHBOARD_EMAIL=${DASHBOARD_EMAIL}
-WP_DASHBOARD_PASSWORD_HASH=${DASHBOARD_HASH}
-WP_FLASK_SECRET=${FLASK_SECRET}
+WP_DASHBOARD_PASSWORD_HASH='${DASHBOARD_HASH}'
+WP_FLASK_SECRET='${FLASK_SECRET}'
 
 WP_NPM_URL=http://127.0.0.1:81
 WP_NPM_EMAIL=${LE_EMAIL}
-WP_NPM_PASSWORD=${NPM_ADMIN_PASSWORD}
+WP_NPM_PASSWORD='${NPM_ADMIN_PASSWORD}'
 WP_LE_EMAIL=${LE_EMAIL}
 MANAGERENV
 

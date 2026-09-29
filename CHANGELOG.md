@@ -1,5 +1,15 @@
 # Changelog
 
+## 9.11.0
+- Fixed install.sh crashing during its own preflight step: generated secrets (scrypt password hash, Flask secret, NPM password) are now single-quoted when written to manager.env, so bash's own `source` doesn't try to expand the `$` characters in the scrypt hash format as variable references.
+- Fixed a real functional bug on the Backup Destination page: the Network NAS section's form was nested inside the Local Storage Location form (invalid HTML). Verified in a real browser that this left the "Save Destination" button completely orphaned (not part of any form - clicking it did nothing) and wired the NAS "Save & Mount"/"Save Only" buttons to the wrong endpoint. Both sections are now properly independent.
+- Cleaned up the Network NAS form layout: added missing label/input CSS (this page had none at all) and arranged the fields into a responsive grid instead of running together on one line.
+- Fixed the "current" mountpoint tag being unreadable in light theme (hardcoded dark background with no explicit text color).
+- Fixed the "Create WordPress Site" panel on the Sites page staying visually stuck dark regardless of the selected theme (hardcoded inline background/border colors bypassing the theme system entirely).
+- Fixed the same class of hardcoded, non-theme-aware color bug across the rest of the app, found via a systematic search rather than one screenshot at a time: the Sites page's site cards and stat boxes, the Site detail page's card background and "More" menu dropdown, Port Manager, and Branding Settings all now correctly follow the selected theme instead of staying stuck dark.
+- Hardened install.sh against two real problems hit standing up a fresh box: `unzip` was missing from the OS dependency list entirely, and Docker's data-root relocation (previously always done manually, one time, outside the script) is now automated - along with relocating containerd's own separate data directory, which was never relocated anywhere before and was the direct cause of a production disk-full incident today. Both are now configured before either service starts for the first time on any future install.
+- Retains all V9.10 Wordfence CVE integration, security audit findings, and host hardening guide/scripts, plus all earlier versioned functionality.
+
 ## 9.10.0
 - Renamed the "Email Settings" page to "Settings" (nav labels updated on Dashboard and Users pages; underlying route unchanged).
 - Added a Vulnerability Scanning section to Settings: a toggle to enable Wordfence vulnerability-feed matching, plus an optional API key (masked once saved, matching the SMTP/NAS password pattern).
