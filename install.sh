@@ -255,6 +255,15 @@ Password: ${NPM_ADMIN_PASSWORD}
 CREDS
 chmod 600 "$NPM_DIR/ADMIN-CREDENTIALS.txt"
 
+echo "Applying firewall + fail2ban hardening..."
+HARDENING_OK=1
+if ! "$ROOT/hardening/harden_firewall.sh"; then
+    HARDENING_OK=0
+    echo "WARNING: firewall hardening failed - the platform itself is installed" >&2
+    echo "         and running, but UFW/fail2ban may not be configured correctly." >&2
+    echo "         Investigate, then re-run: sudo $ROOT/hardening/harden_firewall.sh" >&2
+fi
+
 echo
 echo "============================================================"
 echo " Installation complete"
@@ -267,6 +276,13 @@ echo "Initial admin: ${DASHBOARD_USER}"
 echo
 echo "IMPORTANT: the first admin login is required to enrol MFA before"
 echo "normal dashboard access."
+echo
+if [[ "$HARDENING_OK" == "1" ]]; then
+    echo "Firewall: UFW active, fail2ban enabled (SSH/80/443/dashboard port allowed)."
+else
+    echo "Firewall: hardening FAILED - see warning above. SFTP/phpMyAdmin temporary"
+    echo "          access buttons will not work until this is resolved."
+fi
 echo
 echo "Next:"
 echo "  1. Put ${MANAGER_DOMAIN} behind Nginx Proxy Manager."

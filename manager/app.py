@@ -1368,7 +1368,7 @@ def allocate_phpmyadmin_port(site=None, preferred=None, exclude_ports=None):
 def ufw_status():
     """Return UFW state without changing firewall policy."""
     try:
-        proc = subprocess.run(["ufw", "status"], capture_output=True, text=True, timeout=10)
+        proc = subprocess.run(["ufw", "status", "verbose"], capture_output=True, text=True, timeout=10)
         text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
         active = proc.returncode == 0 and bool(re.search(r"^Status:\s+active\s*$", text, re.I | re.M))
         default_deny = bool(re.search(r"^Default:\s+(?:deny|reject) \(incoming\)", text, re.I | re.M))

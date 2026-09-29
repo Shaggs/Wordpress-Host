@@ -1,5 +1,9 @@
 # Changelog
 
+## 9.12.0
+- Fixed a real bug in `ufw_status()` that permanently blocked the SFTP and phpMyAdmin temporary-access features on every box, regardless of how correctly UFW was actually configured: it called `ufw status` instead of `ufw status verbose`, but the "Default: deny (incoming)" line its own detection regex looks for only appears in verbose output. `default_deny` was always False, so `_ufw_require_ready()` always refused to open any port.
+- `harden_firewall.sh` now runs automatically at the end of install.sh, right after the health check confirms the platform is up. Previously this was a separate, easy-to-forget manual step - and since the platform's own temporary-access features require UFW to be active and default-deny to function at all, skipping it silently broke those buttons on every fresh install. If hardening fails, the install still reports the core platform as successfully installed, with a clear warning to re-run it separately.
+
 ## 9.11.0
 - Fixed install.sh crashing during its own preflight step: generated secrets (scrypt password hash, Flask secret, NPM password) are now single-quoted when written to manager.env, so bash's own `source` doesn't try to expand the `$` characters in the scrypt hash format as variable references.
 - Fixed a real functional bug on the Backup Destination page: the Network NAS section's form was nested inside the Local Storage Location form (invalid HTML). Verified in a real browser that this left the "Save Destination" button completely orphaned (not part of any form - clicking it did nothing) and wired the NAS "Save & Mount"/"Save Only" buttons to the wrong endpoint. Both sections are now properly independent.
