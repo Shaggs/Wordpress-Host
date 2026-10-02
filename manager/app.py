@@ -177,7 +177,7 @@ EMAIL_SETTINGS_V911_HTML = r"""
 <link rel="stylesheet" href="/static/theme.css">
 <style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}label{display:block;font-weight:700;margin-top:14px}input,select{width:100%;padding:10px;margin-top:5px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}.grid{display:grid;grid-template-columns:2fr 1fr;gap:12px}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--blue);margin-top:16px}.green{background:var(--green)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Settings</h1>
 {% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}
-<section class="card"><h2>SMTP</h2><p class="muted">Shared by platform alerts, new-user temporary passwords and password recovery.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="save"><div class="grid"><label>SMTP Host<input name="smtp_host" value="{{e.smtp_host}}"></label><label>Port<input name="smtp_port" type="number" value="{{e.smtp_port}}"></label></div><label>Username<input name="smtp_username" value="{{e.smtp_username}}"></label><label>Password<input name="smtp_password" type="password" placeholder="{{'Saved — leave blank to keep current password' if password_saved else 'SMTP password'}}"></label><label>From Address<input name="from_email" type="email" value="{{e.from_email}}"></label><label>Security<select name="security"><option value="starttls" {% if e.security=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if e.security=='ssl' %}selected{% endif %}>SSL/TLS</option><option value="none" {% if e.security=='none' %}selected{% endif %}>None</option></select></label><h3>Platform Alerts</h3><label><input style="width:auto" type="checkbox" name="enabled" {% if e.enabled %}checked{% endif %}> Enable alert emails</label><label>Alert Recipients<input name="recipients" value="{{e.recipients}}"></label><div class="grid"><label>Health check minutes<input name="check_minutes" type="number" min="1" max="60" value="{{e.check_minutes}}"></label><label>Failure threshold<input name="failure_threshold" type="number" min="1" max="10" value="{{e.failure_threshold}}"></label></div><label><input style="width:auto" type="checkbox" name="send_recovery" {% if e.send_recovery %}checked{% endif %}> Send recovery notifications</label><button class="btn">Save Email Settings</button></form></section><section class="card"><h2>Test SMTP</h2><p class="muted">Save settings first. The test is sent to the Alert Recipients above.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="test">{% for name in ['smtp_host','smtp_port','smtp_username','from_email','recipients','security','check_minutes','failure_threshold'] %}<input type="hidden" name="{{name}}" value="{{e[name]}}">{% endfor %}{% if e.enabled %}<input type="hidden" name="enabled" value="on">{% endif %}{% if e.send_recovery %}<input type="hidden" name="send_recovery" value="on">{% endif %}<button class="btn green">Send Test Email</button></form></section><section class="card"><h2>Vulnerability Scanning</h2><p class="muted">Optionally check installed plugins/themes against Wordfence's known-vulnerability feed during migration scans, in addition to the wordpress.org outdated-version check.</p><form method="post" action="/admin/settings/wordfence/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label><input style="width:auto" type="checkbox" name="enabled" {% if wordfence.enabled %}checked{% endif %}> Enable Wordfence vulnerability feed matching</label><label>Wordfence API Key (optional)<input name="api_key" type="password" placeholder="{{ 'Saved — leave blank to keep current key' if wordfence.api_key_saved else 'API key (optional, increases feed access)' }}"></label><button class="btn">Save Scanning Settings</button></form></section></div></body></html>
+<section class="card"><h2>SMTP</h2><p class="muted">Shared by platform alerts, new-user temporary passwords and password recovery.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="save"><div class="grid"><label>SMTP Host<input name="smtp_host" value="{{e.smtp_host}}"></label><label>Port<input name="smtp_port" type="number" value="{{e.smtp_port}}"></label></div><label>Username<input name="smtp_username" value="{{e.smtp_username}}"></label><label>Password<input name="smtp_password" type="password" placeholder="{{'Saved — leave blank to keep current password' if password_saved else 'SMTP password'}}"></label><label>From Address<input name="from_email" type="email" value="{{e.from_email}}"></label><label>Security<select name="security"><option value="starttls" {% if e.security=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if e.security=='ssl' %}selected{% endif %}>SSL/TLS</option><option value="none" {% if e.security=='none' %}selected{% endif %}>None</option></select></label><h3>Platform Alerts</h3><label><input style="width:auto" type="checkbox" name="enabled" {% if e.enabled %}checked{% endif %}> Enable alert emails</label><label>Alert Recipients<input name="recipients" value="{{e.recipients}}"></label><div class="grid"><label>Health check minutes<input name="check_minutes" type="number" min="1" max="60" value="{{e.check_minutes}}"></label><label>Failure threshold<input name="failure_threshold" type="number" min="1" max="10" value="{{e.failure_threshold}}"></label></div><label><input style="width:auto" type="checkbox" name="send_recovery" {% if e.send_recovery %}checked{% endif %}> Send recovery notifications</label><button class="btn">Save Email Settings</button></form></section><section class="card"><h2>Test SMTP</h2><p class="muted">Save settings first. The test is sent to the Alert Recipients above.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="test">{% for name in ['smtp_host','smtp_port','smtp_username','from_email','recipients','security','check_minutes','failure_threshold'] %}<input type="hidden" name="{{name}}" value="{{e[name]}}">{% endfor %}{% if e.enabled %}<input type="hidden" name="enabled" value="on">{% endif %}{% if e.send_recovery %}<input type="hidden" name="send_recovery" value="on">{% endif %}<button class="btn green">Send Test Email</button></form></section><section class="card"><h2>Vulnerability Scanning</h2><p class="muted">Optionally check installed plugins/themes against Wordfence's known-vulnerability feed during migration scans, in addition to the wordpress.org outdated-version check.</p><form method="post" action="/admin/settings/wordfence/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label><input style="width:auto" type="checkbox" name="enabled" {% if wordfence.enabled %}checked{% endif %}> Enable Wordfence vulnerability feed matching</label><label>Wordfence API Key (optional)<input name="api_key" type="password" placeholder="{{ 'Saved — leave blank to keep current key' if wordfence.api_key_saved else 'API key (optional, increases feed access)' }}"></label><button class="btn">Save Scanning Settings</button></form></section><section class="card"><h2>Login Logs</h2><p class="muted">Every attempt to sign in to this dashboard, successful or not.</p><table style="width:100%;border-collapse:collapse;font-size:13px"><tr><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Time</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Username</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Event</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Result</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">IP Address</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Country</th></tr>{% for a in auth_events %}<tr><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.timestamp }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.username }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.event }}</td><td style="padding:9px;border-bottom:1px solid var(--line)"><span style="color:{{ '#4ade80' if a.result in ['success','email_sent'] else ('#fbbf24' if a.result=='rate_limited' else '#fb7185') }}">{{ a.result }}</span></td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.ip }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.country }}</td></tr>{% else %}<tr><td colspan="6" style="padding:9px">No login activity recorded yet.</td></tr>{% endfor %}</table></section><section class="card"><h2>WordPress Admin Logins</h2><p class="muted">Administrator logins reported by the login-reporter plugin installed on each WordPress site. Use "Install Login Reporting" on a site's dashboard to enable this for sites created before this feature existed.</p><table style="width:100%;border-collapse:collapse;font-size:13px"><tr><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Time</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Site</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Username</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">IP Address</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Country</th></tr>{% for w in wp_admin_logins %}<tr><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.timestamp }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.site }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.username }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.ip }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.country }}</td></tr>{% else %}<tr><td colspan="5" style="padding:9px">No WordPress admin logins recorded yet.</td></tr>{% endfor %}</table></section></div></body></html>
 """
 
 ALERTS_HTML = r"""
@@ -387,6 +387,7 @@ SITE_HTML = r"""
 <div class="moreitem"><b>Staging</b><p>Create an isolated WordPress and database clone.</p><form method="post" action="/staging-clone/{{ site.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Clone</button></form></div>
 <div class="moreitem">{% if site.mode == 'quarantine' %}<b class="good">Quarantined</b><p>This site is disconnected from the proxy - not publicly reachable.</p><form method="post" action="/site-mode/{{ site.site }}/live"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Restore Access</button></form>{% else %}<b class="bad">Quarantine</b><p>Immediately remove this WordPress container from public proxy access.</p><form method="post" action="/site-mode/{{ site.site }}/quarantine"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Quarantine</button></form>{% endif %}</div>
 <div class="moreitem">{% if site.status == 'running' %}<b>Stop</b><p>Stop the WordPress container.</p><form method="post" action="/action/{{ site.site }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Stop Site</button></form>{% else %}<b class="good">Start</b><p>Start the stopped WordPress container.</p><form method="post" action="/action/{{ site.site }}/start"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Start Site</button></form>{% endif %}</div>
+{% if site.type != 'html_php' %}<div class="moreitem"><b>Login Reporting</b><p>Report WordPress administrator logins (username + IP) back to the dashboard.</p><form method="post" action="/action/{{ site.site }}/install-login-reporter"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Install / Reinstall</button></form></div>{% endif %}
 <div class="moreitem"><b class="bad">Delete</b><p>Delete the site containers and associated site record.</p><form method="post" action="/action/{{ site.site }}/delete" onsubmit="return confirm('Delete {{ site.site }}?')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Delete</button></form></div>
 </div></div>{% endif %}
 </section>
@@ -575,6 +576,20 @@ def init_auth():
                 user_agent TEXT
             )
         """)
+        existing_auth_cols = {row[1] for row in db.execute("PRAGMA table_info(auth_events)").fetchall()}
+        if "country" not in existing_auth_cols:
+            db.execute("ALTER TABLE auth_events ADD COLUMN country TEXT")
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS wp_admin_logins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site TEXT NOT NULL,
+                username TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                country TEXT,
+                timestamp TEXT NOT NULL
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_wp_admin_logins_site ON wp_admin_logins(site)")
         db.commit()
     os.chmod(AUTH_DB, 0o600)
 
@@ -864,17 +879,50 @@ def client_ip():
     # reverse proxy configuration before relying on X-Forwarded-For.
     return request.remote_addr or "-"
 
+_GEOIP_CACHE = {}
+
+def geoip_country(ip):
+    """Best-effort IP -> country-code lookup. Private/loopback/link-local
+    addresses short-circuit to "LAN" with no network call. Any failure
+    (timeout, no internet, service down) returns "-" rather than raising -
+    this must never be allowed to break a login attempt that's waiting on
+    it. Results are cached in memory since the same IP logging in
+    repeatedly shouldn't trigger a fresh lookup every time."""
+    if not ip or ip == "-":
+        return "-"
+    if ip in _GEOIP_CACHE:
+        return _GEOIP_CACHE[ip]
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            _GEOIP_CACHE[ip] = "LAN"
+            return "LAN"
+    except ValueError:
+        return "-"
+    result = "-"
+    try:
+        resp = requests.get(f"http://ip-api.com/json/{ip}?fields=status,countryCode", timeout=2)
+        data = resp.json()
+        if data.get("status") == "success":
+            result = data.get("countryCode") or "-"
+    except Exception:
+        pass
+    _GEOIP_CACHE[ip] = result
+    return result
+
 def log_auth(username, event, result):
+    ip = client_ip()
     with sqlite3.connect(AUTH_DB) as db:
         db.execute(
-            "INSERT INTO auth_events(timestamp,username,event,result,ip,user_agent) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO auth_events(timestamp,username,event,result,ip,user_agent,country) VALUES(?,?,?,?,?,?,?)",
             (
                 datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 username or "-",
                 event,
                 result,
-                client_ip(),
+                ip,
                 (request.headers.get("User-Agent") or "-")[:300],
+                geoip_country(ip),
             ),
         )
         db.commit()
@@ -882,14 +930,82 @@ def log_auth(username, event, result):
 def recent_auth_events(limit=50):
     with sqlite3.connect(AUTH_DB) as db:
         rows = db.execute(
-            "SELECT timestamp,username,event,result,ip,user_agent "
+            "SELECT timestamp,username,event,result,ip,user_agent,country "
             "FROM auth_events ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [
-        dict(timestamp=format_adelaide(r[0]), username=r[1], event=r[2], result=r[3], ip=r[4], user_agent=r[5])
+        dict(timestamp=format_adelaide(r[0]), username=r[1], event=r[2], result=r[3], ip=r[4], user_agent=r[5], country=r[6] or "-")
         for r in rows
     ]
+
+_WP_PROXY_GATEWAY_CACHE = {}
+
+def wp_proxy_gateway_ip():
+    """The Docker bridge gateway IP for the wp-proxy network - how a
+    container reaches services running directly on the host (e.g. this
+    manager app). Cached since it won't change during the app's lifetime."""
+    if "ip" not in _WP_PROXY_GATEWAY_CACHE:
+        try:
+            net = docker_client.networks.get(PROXY_NETWORK)
+            net.reload()
+            ipam = net.attrs.get("IPAM", {}).get("Config", [])
+            gw = ipam[0].get("Gateway") if ipam else None
+            _WP_PROXY_GATEWAY_CACHE["ip"] = gw or "172.17.0.1"
+        except Exception:
+            _WP_PROXY_GATEWAY_CACHE["ip"] = "172.17.0.1"
+    return _WP_PROXY_GATEWAY_CACHE["ip"]
+
+def wp_login_callback_url():
+    port = os.environ.get("WP_DASHBOARD_PORT", "8088")
+    return f"http://{wp_proxy_gateway_ip()}:{port}/api/wp-login-event"
+
+WP_LOGIN_REPORTER_MU_PLUGIN = r"""<?php
+/* WP Host Manager - admin login reporter (auto-installed, do not edit) */
+add_action('wp_login', function($user_login, $user) {
+    if (!in_array('administrator', (array)$user->roles, true)) return;
+    if (!defined('WP_HOST_LOGIN_CALLBACK_URL') || !defined('WP_HOST_LOGIN_CALLBACK_SECRET')) return;
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
+    $payload = wp_json_encode(array(
+        'site' => defined('WP_HOST_SITE_ID') ? WP_HOST_SITE_ID : '-',
+        'username' => $user_login,
+        'ip' => $ip,
+    ));
+    wp_remote_post(WP_HOST_LOGIN_CALLBACK_URL, array(
+        'timeout' => 3,
+        'blocking' => false,
+        'headers' => array(
+            'Content-Type' => 'application/json',
+            'X-WP-Host-Secret' => WP_HOST_LOGIN_CALLBACK_SECRET,
+        ),
+        'body' => $payload,
+    ));
+}, 10, 2);
+"""
+
+def install_login_reporter_files(site_dir, site, login_secret):
+    """Writes the mu-plugin file into an already-existing wp-content
+    directory. Does not touch wp-config.php - callers add the required
+    defines separately (create_site writes them fresh into
+    WORDPRESS_CONFIG_EXTRA; the retrofit route inserts them into an
+    existing wp-config.php)."""
+    mu_dir = site_dir / "wordpress" / "wp-content" / "mu-plugins"
+    mu_dir.mkdir(parents=True, exist_ok=True)
+    (mu_dir / "wp-host-login-reporter.php").write_text(WP_LOGIN_REPORTER_MU_PLUGIN)
+
+def record_wp_admin_login(site, username, ip):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    with sqlite3.connect(AUTH_DB) as db:
+        db.execute("INSERT INTO wp_admin_logins(site,username,ip,country,timestamp) VALUES(?,?,?,?,?)", (site, username, ip, geoip_country(ip), now))
+        db.commit()
+
+def recent_wp_admin_logins(limit=100):
+    with sqlite3.connect(AUTH_DB) as db:
+        rows = db.execute(
+            "SELECT site,username,ip,country,timestamp FROM wp_admin_logins ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(site=r[0], username=r[1], ip=r[2], country=r[3] or "-", timestamp=format_adelaide(r[4])) for r in rows]
 
 def login_required(fn):
     @wraps(fn)
@@ -3201,6 +3317,7 @@ def create_site(site, domain, memory, cpus, db_memory, wp_admin, wp_email, wp_pa
     db_pass = secrets.token_urlsafe(32)
     db_root = secrets.token_urlsafe(40)
     wp_password = wp_password.strip() or secrets.token_urlsafe(18)
+    wp_login_secret = secrets.token_urlsafe(32)
 
     env = f"""SITE={site}
 DOMAIN={domain}
@@ -3262,6 +3379,9 @@ DB_MEMORY={db_memory}
       WORDPRESS_CONFIG_EXTRA: |
         define('WP_HOME', 'https://{domain}');
         define('WP_SITEURL', 'https://{domain}');
+        define('WP_HOST_SITE_ID', '{site}');
+        define('WP_HOST_LOGIN_CALLBACK_URL', '{wp_login_callback_url()}');
+        define('WP_HOST_LOGIN_CALLBACK_SECRET', '{wp_login_secret}');
     volumes:
       - ./wordpress:/var/www/html
     mem_limit: ${{WP_MEMORY}}
@@ -3283,7 +3403,8 @@ networks:
     (site_dir / "compose.yml").write_text(compose)
 
     meta = dict(site=site, domain=domain, memory=memory, cpus=cpus, db_memory=db_memory,
-                wp_admin=wp_admin, wp_email=wp_email, created=datetime.now().isoformat())
+                wp_admin=wp_admin, wp_email=wp_email, created=datetime.now().isoformat(),
+                wp_login_secret=wp_login_secret)
     (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
 
     run(["docker","compose","pull"], cwd=site_dir)
@@ -3298,6 +3419,11 @@ networks:
         except Exception:
             pass
         time.sleep(2)
+
+    try:
+        install_login_reporter_files(site_dir, site, wp_login_secret)
+    except Exception as exc:
+        meta["login_reporter_warning"] = str(exc)
 
     cli_env = [
         "-e", f"WORDPRESS_DB_HOST={site}-db:3306",
@@ -4592,6 +4718,37 @@ def users_page():
             current_role(),
     )
 
+
+@APP.post("/api/wp-login-event")
+@csrf.exempt
+def wp_login_event():
+    """Receives admin-login reports from the mu-plugin installed on each
+    WordPress site. Not session-authenticated (it's called from inside a
+    WordPress container, not a browser) - validated instead by a
+    per-site shared secret generated at site-creation/retrofit time and
+    stored in that site's site.json. A request claiming to be from site
+    X is only accepted if its secret matches the one WE generated and
+    gave to site X - one site cannot spoof another's login events."""
+    data = request.get_json(silent=True) or {}
+    site = (data.get("site") or "").strip()
+    username = (data.get("username") or "-").strip()[:200]
+    ip = (data.get("ip") or "-").strip()
+    secret_header = request.headers.get("X-WP-Host-Secret", "")
+    if not site or not SITE_RE.match(site):
+        return jsonify({"error": "invalid site"}), 400
+    meta_path = SITES / site / "site.json"
+    if not meta_path.exists():
+        return jsonify({"error": "unknown site"}), 404
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception:
+        return jsonify({"error": "bad metadata"}), 500
+    expected_secret = meta.get("wp_login_secret")
+    if not expected_secret or not secret_header or secret_header != expected_secret:
+        return jsonify({"error": "invalid secret"}), 403
+    record_wp_admin_login(site, username, ip)
+    log_action("wp_admin_login", site, "success", f"{username} from {ip}")
+    return jsonify({"ok": True})
 
 @APP.route("/login", methods=["GET","POST"])
 def login():
@@ -6279,7 +6436,7 @@ def email_settings_page_v911():
     data = load_email_settings()
     password_saved = bool(data.get("smtp_password"))
     view = dict(data); view["smtp_password"] = ""
-    return render_template_string(EMAIL_SETTINGS_V911_HTML, e=view, password_saved=password_saved, current_theme=current_user_theme(), wordfence=load_wordfence_settings())
+    return render_template_string(EMAIL_SETTINGS_V911_HTML, e=view, password_saved=password_saved, current_theme=current_user_theme(), wordfence=load_wordfence_settings(), auth_events=recent_auth_events(100), wp_admin_logins=recent_wp_admin_logins(100))
 
 @APP.get("/admin/backup-destination")
 @admin_required
@@ -6548,6 +6705,38 @@ def action(site, action):
         elif action == "update":
             run(["docker","compose","pull"], cwd=site_dir)
             run(["docker","compose","up","-d"], cwd=site_dir)
+        elif action == "install-login-reporter":
+            meta_path = site_dir / "site.json"
+            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+            if meta.get("type") == "html_php":
+                flash(f"{site}: admin login reporting only applies to WordPress sites.")
+                return redirect(request.referrer or url_for("site_dashboard", site=site))
+            secret = meta.get("wp_login_secret") or secrets.token_urlsafe(32)
+            meta["wp_login_secret"] = secret
+            meta_path.write_text(json.dumps(meta, indent=2))
+
+            install_login_reporter_files(site_dir, site, secret)
+
+            wp_config_path = site_dir / "wordpress" / "wp-config.php"
+            if wp_config_path.exists():
+                config_text = wp_config_path.read_text()
+                if "WP_HOST_LOGIN_CALLBACK_URL" not in config_text:
+                    insertion = (
+                        f"define('WP_HOST_SITE_ID', '{site}');\n"
+                        f"define('WP_HOST_LOGIN_CALLBACK_URL', '{wp_login_callback_url()}');\n"
+                        f"define('WP_HOST_LOGIN_CALLBACK_SECRET', '{secret}');\n"
+                    )
+                    anchor = "/* That's all, stop editing!"
+                    if anchor in config_text:
+                        config_text = config_text.replace(anchor, insertion + anchor, 1)
+                    else:
+                        config_text = insertion + config_text
+                    wp_config_path.write_text(config_text)
+
+            run(["docker","restart", f"{site}-wp"])
+            log_action("site_install_login_reporter", site, "success", "mu-plugin + wp-config installed")
+            flash(f"{site}: admin login reporting installed. WordPress container restarted.")
+            return redirect(request.referrer or url_for("site_dashboard", site=site))
         elif action == "backup":
             name = backup_site(site)
             enforce_retention(site)
