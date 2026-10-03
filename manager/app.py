@@ -298,7 +298,7 @@ label{display:block;font-weight:700;font-size:12px;margin-bottom:4px;color:var(-
 <label>Database Memory<select name="db_memory"><option>512m</option><option>1g</option><option>2g</option></select></label>
 <label class="wpOnly">Admin Username<input name="wp_admin" value="admin" required></label>
 <label class="wpOnly">Admin Email<input name="wp_email" type="email" placeholder="Admin email" required></label>
-<label class="wpOnly">Admin Password<input name="wp_password" placeholder="Admin password (blank = generate)"></label>
+<label class="wpOnly">Admin Password<input name="wp_password" placeholder="Admin password (blank = generate)" type="password"></label>
 <label class="phpOnly" style="display:none">Database<select name="include_db"><option value="no">No database</option><option value="yes">Include database</option></select></label>
 <label>Proxy / SSL<select name="auto_proxy"><option value="yes">Proxy + SSL</option><option value="no">No proxy (HTTP only)</option></select></label>
 </div><p><button class="btn">Create Site</button></p></form></div>
@@ -388,7 +388,19 @@ SITE_HTML = r"""
 <div class="moreitem">{% if site.mode == 'quarantine' %}<b class="good">Quarantined</b><p>This site is disconnected from the proxy - not publicly reachable.</p><form method="post" action="/site-mode/{{ site.site }}/live"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Restore Access</button></form>{% else %}<b class="bad">Quarantine</b><p>Immediately remove this WordPress container from public proxy access.</p><form method="post" action="/site-mode/{{ site.site }}/quarantine"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Quarantine</button></form>{% endif %}</div>
 <div class="moreitem">{% if site.status == 'running' %}<b>Stop</b><p>Stop the WordPress container.</p><form method="post" action="/action/{{ site.site }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Stop Site</button></form>{% else %}<b class="good">Start</b><p>Start the stopped WordPress container.</p><form method="post" action="/action/{{ site.site }}/start"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Start Site</button></form>{% endif %}</div>
 {% if site.type != 'html_php' %}<div class="moreitem"><b>Login Reporting</b><p>Report WordPress administrator logins (username + IP) back to the dashboard.</p><form method="post" action="/action/{{ site.site }}/install-login-reporter"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Install / Reinstall</button></form></div>{% endif %}
-<div class="moreitem"><b class="bad">Delete</b><p>Delete the site containers and associated site record.</p><form method="post" action="/action/{{ site.site }}/delete" onsubmit="return confirm('Delete {{ site.site }}?')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Delete</button></form></div>
+<div class="moreitem"><b class="bad">Delete</b><p>Permanently deletes the site's files and database. Only the most recent backup is kept.</p><form id="deleteForm" method="post" action="/action/{{ site.site }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form><button type="button" class="btn red" onclick="document.getElementById('deleteModalOverlay').style.display='flex'">Delete</button></div>
+<div id="deleteModalOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center">
+<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;max-width:420px;width:90%">
+<h3 style="margin-top:0;color:#fb7185">Permanently delete {{ site.site }}?</h3>
+<p>This removes the site’s files and database entirely. Only the most recent backup will be kept — everything else, including any other files in its backup folder, is gone for good.</p>
+<p>Type <b>delete</b> below to confirm.</p>
+<input type="text" id="deleteConfirmInput" autocomplete="off" style="width:100%;padding:9px;background:var(--field);border:1px solid var(--line);border-radius:7px;color:var(--text);margin-bottom:14px" oninput="document.getElementById('deleteConfirmBtn').disabled = this.value.trim().toLowerCase() !== 'delete'">
+<div style="display:flex;gap:9px;justify-content:flex-end">
+<button type="button" class="btn" onclick="document.getElementById('deleteModalOverlay').style.display='none'; document.getElementById('deleteConfirmInput').value=''; document.getElementById('deleteConfirmBtn').disabled=true;">Cancel</button>
+<button type="button" id="deleteConfirmBtn" class="btn red" disabled onclick="document.getElementById('deleteForm').submit()">Confirm Delete</button>
+</div>
+</div>
+</div>
 </div></div>{% endif %}
 </section>
 
@@ -400,7 +412,7 @@ SITE_HTML = r"""
 <div class="card"><h3>Database</h3><div class="row"><span>Name</span><b>{{ runtime.db_name }}</b></div><div class="row"><span>User</span><b>{{ runtime.db_user }}</b></div><div class="row"><span>Host</span><b>{{ runtime.db_host }}</b></div><div class="row"><span>Health</span><b>{{ site.db_health }}</b></div></div>
 </div></section>
 
-<section class="tabpane" id="tab-backups"><div class="card"><h3>Backup History</h3><table class="table"><tr><th>Backup</th><th>Created (Adelaide)</th><th>Size</th></tr>{% for b in backups %}<tr><td>{{ b.name }}</td><td>{{ b.created }}</td><td>{{ b.size }}</td></tr>{% else %}<tr><td colspan="3">No backups found.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-backups"><div class="card"><h3>Backup Plan</h3><p class="muted">Controls how often this site is backed up automatically and how long local backups are kept. Backups still run at the platform's scheduled time ({{ "%02d:00"|format(backup_hour) }}) - frequency just decides which days that happens on.</p><form method="post" action="/site/{{ site.site }}/backup-plan"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px"><label>Frequency<select name="frequency"><option value="daily" {{ 'selected' if backup_plan.frequency=='daily' }}>Daily</option><option value="weekly" {{ 'selected' if backup_plan.frequency=='weekly' }}>Weekly</option></select></label><label>Retention (days)<input type="number" name="retention_days" min="1" max="365" value="{{ backup_plan.retention_days }}"></label></div><p><button class="btn">Save Backup Plan</button></p></form></div><div class="card"><h3>Backup History</h3><table class="table"><tr><th>Backup</th><th>Created (Adelaide)</th><th>Size</th><th>Actions</th></tr>{% for b in backups %}<tr><td>{{ b.name }}</td><td>{{ b.created }}</td><td>{{ b.size }}</td><td><form method="post" action="/action/{{ site.site }}/restore/{{ b.stamp }}" onsubmit="return confirm('Restore {{ site.site }} from this backup? This replaces the live site files and database with this backup\'s contents.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Restore</button></form></td></tr>{% else %}<tr><td colspan="4">No backups found.</td></tr>{% endfor %}</table></div></section>
 <section class="tabpane" id="tab-plugins"><div class="card"><h3>Plugins</h3><table class="table"><tr><th>Plugin</th><th>Version</th></tr>{% for p in runtime.plugin_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No plugin inventory available.</td></tr>{% endfor %}</table></div></section>
 <section class="tabpane" id="tab-themes"><div class="card"><h3>Themes</h3><table class="table"><tr><th>Theme</th><th>Version</th></tr>{% for p in runtime.theme_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No theme inventory available.</td></tr>{% endfor %}</table></div></section>
 <section class="tabpane" id="tab-database"><div class="card"><h3>Database</h3><p>Database host: <b>{{ runtime.db_host }}</b></p><p>Database name: <b>{{ runtime.db_name }}</b></p><p>Database user: <b>{{ runtime.db_user }}</b></p>{% if current_role in ['admin','user'] %}{% if pma_access.open %}<a class="btn green" target="_blank" rel="noopener" href="http://{{ manager_public_host }}:{{ site.phpmyadmin_port }}">Open phpMyAdmin ↗</a> <form method="post" action="/access/{{ site.site }}/phpmyadmin/close" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Close Firewall</button></form>{% else %}<form method="post" target="_blank" action="/access/{{ site.site }}/phpmyadmin/open/30"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="source_ip" value="{{ client_ip }}"><input type="hidden" name="launch" value="1"><button class="btn">Open phpMyAdmin for 30m ↗</button></form>{% endif %}{% endif %}</div></section>
@@ -477,7 +489,7 @@ HTML = r"""
 <div class="userbox"><div class="avatar">{{ current_user[:1]|upper }}</div><div><strong>{{ current_user }}</strong><div class="muted">{{ current_role|title }}</div></div></div><p><a href="/logout">⇱ Log out</a></p></div>
 </aside>
 <div class="content"><header class="top"><h1>Dashboard</h1><div><form method="post" action="/account/theme" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="theme" onchange="this.form.submit()" title="Colour scheme"><option value="midnight" {{ 'selected' if current_theme=='midnight' else '' }}>🌙 Midnight</option><option value="light" {{ 'selected' if current_theme=='light' else '' }}>☀ Light</option><option value="forest" {{ 'selected' if current_theme=='forest' else '' }}>🌲 Forest</option><option value="sunset" {{ 'selected' if current_theme=='sunset' else '' }}>🌇 Sunset</option></select></form><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"> <a class="btn blue" href="/">↻ Refresh</a></div></header><main>
-{% with messages = get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
+{% with messages = get_flashed_messages(with_categories=true) %}{% for category, m in messages %}{% if category == 'wp_password_reveal' %}<div class="flash" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>WordPress admin password:</span><input type="password" id="wp-pw-reveal" value="{{ m }}" readonly style="max-width:220px;background:#0b1727;color:#fff;border:1px solid var(--line);border-radius:6px;padding:6px 8px"><button type="button" class="btn" onclick="var el=document.getElementById('wp-pw-reveal'); el.type = el.type==='password' ? 'text' : 'password'; this.textContent = el.type==='password' ? 'Show' : 'Hide';">Show</button><button type="button" class="btn blue" onclick="navigator.clipboard.writeText(document.getElementById('wp-pw-reveal').value); this.textContent='Copied!'; var b=this; setTimeout(function(){b.textContent='Copy';},1500);">Copy</button><span class="muted" style="font-size:12px">Save this now - it won't be shown again.</span></div>{% else %}<div class="flash">{{ m }}</div>{% endif %}{% endfor %}{% endwith %}
 <div class="kpis"><div class="kpi"><strong>{{ site_summary.total }}</strong>Total Sites<small>All sites on this server</small></div><div class="kpi"><strong class="good">{{ site_summary.running }}</strong>Running<small>Active and healthy</small></div><div class="kpi"><strong class="warn">{{ site_summary.not_created }}</strong>Not Created<small>Awaiting setup</small></div><div class="kpi"><strong>{{ site_summary.backups }}</strong>Total Backups<small>Across all sites</small></div><div class="kpi"><strong>{{ host_stats.disk_used }}</strong>Storage Used<small>Host filesystem</small></div></div>
 {% if alerts %}<section class="section"><div class="sectionhead"><h2>Active Alerts</h2></div>{% for a in alerts %}<div class="flash"><b>{{ a.site }}</b>: {{ a.message }}</div>{% endfor %}</section>{% endif %}
 <section class="section">
@@ -3071,10 +3083,51 @@ def nas_status():
     return nas
 
 
+def site_backup_plan(site):
+    """Per-site backup settings, falling back to the platform defaults
+    for any site that hasn't configured its own (including every site
+    created before this feature existed)."""
+    meta_path = SITES / site / "site.json"
+    retention_days = BACKUP_RETENTION_DAYS
+    frequency = "daily"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+            retention_days = int(meta.get("backup_retention_days") or BACKUP_RETENTION_DAYS)
+            frequency = meta.get("backup_frequency") or "daily"
+            if frequency not in ("daily", "weekly"):
+                frequency = "daily"
+        except Exception:
+            pass
+    return {"retention_days": retention_days, "frequency": frequency}
+
+def save_site_backup_plan(site, retention_days, frequency):
+    meta_path = SITES / site / "site.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta["backup_retention_days"] = max(1, min(365, int(retention_days)))
+    meta["backup_frequency"] = frequency if frequency in ("daily", "weekly") else "daily"
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+def days_since_last_backup(site):
+    """Age in days of the most recent backup archive, or None if this
+    site has never been backed up (treated as "due now")."""
+    bdir = backup_root() / site
+    if not bdir.exists():
+        return None
+    newest = None
+    for p in bdir.glob("*.tar.gz"):
+        mtime = p.stat().st_mtime
+        if newest is None or mtime > newest:
+            newest = mtime
+    if newest is None:
+        return None
+    return (time.time() - newest) / 86400
+
 def enforce_retention(site):
     bdir = backup_root() / site
     if not bdir.exists(): return
-    cutoff = time.time() - BACKUP_RETENTION_DAYS * 86400
+    plan = site_backup_plan(site)
+    cutoff = time.time() - plan["retention_days"] * 86400
     for p in bdir.iterdir():
         if p.is_file() and p.stat().st_mtime < cutoff:
             p.unlink(missing_ok=True)
@@ -3089,6 +3142,11 @@ def scheduled_backup_all():
         for d in list(SITES.iterdir()) if SITES.exists() else []:
             if d.is_dir() and (d/"site.json").exists():
                 try:
+                    plan = site_backup_plan(d.name)
+                    if plan["frequency"] == "weekly":
+                        age = days_since_last_backup(d.name)
+                        if age is not None and age < 7:
+                            continue
                     backup_site(d.name)
                     enforce_retention(d.name)
                 except Exception:
@@ -3210,6 +3268,7 @@ def site_backup_history(site, limit=20):
     for p in sorted(bdir.glob("*.tar.gz"), key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
         rows.append({
             "name": p.name,
+            "stamp": p.name[:-len(".tar.gz")] if p.name.endswith(".tar.gz") else p.stem,
             "size": human_bytes(p.stat().st_size),
             "created": format_adelaide(p.stat().st_mtime),
         })
@@ -3673,18 +3732,31 @@ def backup_site(site):
         log_action("backup_nas_replication", site, "failed", str(exc))
     return archive.name
 
-def restore_latest(site):
+def restore_backup(site, stamp=None):
+    """Restores a site from a backup set. If stamp is None, picks the
+    most recent complete set (the original behavior). If stamp is
+    given, it must be a specific backup's timestamp identifier (e.g.
+    "20261001-020000") - validated against the exact format our own
+    backups use, to rule out any path-traversal via this value."""
     site_dir = SITES / site
     bdir = backup_root() / site
     if not site_dir.exists() or not bdir.exists():
         raise ValueError("Site or backup directory not found.")
-    archives = sorted(bdir.glob("*.tar.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
-    dbs = sorted(bdir.glob("*-database.sql.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
-    if not archives or not dbs:
-        raise ValueError("No complete backup set found.")
 
-    archive = archives[0]
-    dbgz = dbs[0]
+    if stamp is not None:
+        if not re.match(r'^\d{8}-\d{6}$', stamp):
+            raise ValueError("Invalid backup identifier.")
+        archive = bdir / f"{stamp}.tar.gz"
+        dbgz = bdir / f"{stamp}-database.sql.gz"
+        if not archive.exists() or not dbgz.exists():
+            raise ValueError(f"Backup set '{stamp}' not found or incomplete.")
+    else:
+        archives = sorted(bdir.glob("*.tar.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
+        dbs = sorted(bdir.glob("*-database.sql.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
+        if not archives or not dbs:
+            raise ValueError("No complete backup set found.")
+        archive = archives[0]
+        dbgz = dbs[0]
 
     run(["docker","compose","stop","wordpress"], cwd=site_dir)
     wpdir = site_dir / "wordpress"
@@ -3705,6 +3777,9 @@ def restore_latest(site):
     run(["docker","compose","up","-d"], cwd=site_dir)
     shutil.rmtree(safety, ignore_errors=True)
     return archive.name
+
+def restore_latest(site):
+    return restore_backup(site, stamp=None)
 
 def site_summary(sites):
     return {
@@ -5731,6 +5806,23 @@ def sites_page():
         security_alert_count=security_alert_count() if current_role() in {"admin","user"} else 0,
     )
 
+@APP.post("/site/<site>/backup-plan")
+@operator_required
+def save_backup_plan(site):
+    if not SITE_RE.match(site) or not (SITES / site / "site.json").exists():
+        abort(404)
+    try:
+        retention_days = int(request.form.get("retention_days", "14"))
+        frequency = request.form.get("frequency", "daily")
+        save_site_backup_plan(site, retention_days, frequency)
+        flash(f"Backup plan updated: {frequency}, {max(1,min(365,retention_days))}-day retention.")
+        log_action("site_backup_plan_save", site, "success", f"{frequency}/{retention_days}d")
+    except Exception as e:
+        flash(f"Could not save backup plan: {e}")
+        log_action("site_backup_plan_save", site, "failed", str(e))
+    return redirect(url_for("site_dashboard", site=site) + "#backups")
+
+
 @APP.get("/site/<site>")
 @login_required
 def site_dashboard(site):
@@ -5747,6 +5839,8 @@ def site_dashboard(site):
         runtime=site_runtime_details(site),
         ops=get_site_ops(site),
         backups=site_backup_history(site),
+        backup_plan=site_backup_plan(site),
+        backup_hour=BACKUP_HOUR,
         findings=site_security_findings(site),
         migration_files=migration_engine.source_files(site),
         migration_report=migration_engine.load_report(site),
@@ -6674,15 +6768,28 @@ def create():
             )
             log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
             if meta.get("proxy_status") == "provisioned":
-                flash(f"Site created and HTTPS provisioned. WordPress admin password: {password} — save this now.")
+                flash("Site created and HTTPS provisioned.")
             elif meta.get("proxy_status") == "failed":
-                flash(f"Site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}. WordPress admin password: {password}")
+                flash(f"Site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}")
             else:
-                flash(f"Site created. WordPress admin password: {password} — save this now.")
+                flash("Site created.")
+            flash(password, "wp_password_reveal")
     except Exception as e:
         log_action("site_create", request.form.get("site",""), "failed", str(e))
         flash(f"Create failed: {e}")
     return redirect(url_for("index"))
+
+@APP.post("/action/<site>/restore/<stamp>")
+@operator_required
+def restore_specific_backup(site, stamp):
+    try:
+        name = restore_backup(site, stamp=stamp)
+        log_action("site_restore", site, "success", name)
+        flash(f"{site}: restored from backup {name}.")
+    except Exception as e:
+        log_action("site_restore", site, "failed", str(e))
+        flash(f"{site}: restore failed: {e}")
+    return redirect(url_for("site_dashboard", site=site) + "#backups")
 
 @APP.post("/action/<site>/<action>")
 @operator_required
@@ -6793,8 +6900,26 @@ def action(site, action):
             remove_phpmyadmin(site)
             disable_sftp(site)
             release_management_port_reservations(site)
-            run(["docker","compose","down"], cwd=site_dir)
-            flash("Containers removed and management-port reservations released. Site directory and persistent database volume were retained.")
+            run(["docker","compose","down","-v"], cwd=site_dir)
+
+            # Keep only the most recent complete backup set; remove
+            # everything else in this site's backup folder (older sets,
+            # and any stray files).
+            bdir = backup_root() / site
+            if bdir.exists():
+                archives = sorted(bdir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+                keep_stamp = None
+                if archives:
+                    newest = archives[0]
+                    keep_stamp = newest.name[:-len(".tar.gz")] if newest.name.endswith(".tar.gz") else newest.stem
+                for p in list(bdir.iterdir()):
+                    if p.is_file() and (keep_stamp is None or not p.name.startswith(keep_stamp)):
+                        p.unlink(missing_ok=True)
+
+            shutil.rmtree(site_dir, ignore_errors=True)
+            deleted_by = session.get("username", "-")
+            log_action("site_delete", site, "success", f"deleted by {deleted_by}")
+            flash(f"Site deleted by {deleted_by}: files and database removed. The most recent backup was kept; everything else was permanently deleted.")
             return redirect(url_for("index"))
         else:
             raise ValueError("Unknown action.")
