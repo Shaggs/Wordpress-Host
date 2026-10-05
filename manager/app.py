@@ -214,6 +214,7 @@ ALERTS_HTML = r"""
 <div class="field"><b>First Seen</b>{{ f.first_seen }}</div>
 </div>
 {% if f.evidence and f.evidence != '-' %}<p><b>Evidence:</b> {{ f.evidence }}</p>{% endif %}
+<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">{% if f.finding_type == 'backup_cleanup_suggested' %}<form method="post" action="/action/{{ f.site }}/remove-oldest-backup" onsubmit="return confirm('Remove the single oldest backup for {{ f.site }}? This cannot be undone.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Remove Oldest Backup</button></form>{% endif %}<form method="post" action="/alerts/dismiss/{{ f.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Dismiss for 24h</button></form></div>
 </section>
 {% endfor %}
 
@@ -658,6 +659,9 @@ def init_auth():
         """)
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_security_finding_key ON security_findings(site,finding_key)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_security_findings_active ON security_findings(active)")
+        existing_cols = {row[1] for row in db.execute("PRAGMA table_info(security_findings)").fetchall()}
+        if "dismissed_until" not in existing_cols:
+            db.execute("ALTER TABLE security_findings ADD COLUMN dismissed_until TEXT")
         db.execute("""CREATE TABLE IF NOT EXISTS site_operations (
             site TEXT PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'live',
             notes TEXT NOT NULL DEFAULT '', owner_name TEXT NOT NULL DEFAULT '',
@@ -2821,6 +2825,41 @@ def load_vuln_scan_report(site):
     except Exception:
         return None
 
+def site_backup_disk_usage():
+    """Returns [(site, total_bytes)] for every site's backup folder,
+    sorted descending by total disk usage - used to identify which
+    site would free the most space if its oldest backups were removed."""
+    results = []
+    root = backup_root()
+    if not root.exists():
+        return results
+    for d in root.iterdir():
+        if d.is_dir():
+            try:
+                total = sum(p.stat().st_size for p in d.iterdir() if p.is_file())
+            except Exception:
+                continue
+            results.append((d.name, total))
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results
+
+def remove_oldest_backup(site):
+    """Removes the single oldest complete backup set for a site (its
+    .tar.gz and matching -database.sql.gz). Returns the removed stamp,
+    or None if there was nothing to remove."""
+    bdir = backup_root() / site
+    if not bdir.exists():
+        return None
+    archives = sorted(bdir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
+    if not archives:
+        return None
+    oldest = archives[0]
+    stamp = oldest.name[:-len(".tar.gz")] if oldest.name.endswith(".tar.gz") else oldest.stem
+    for p in list(bdir.iterdir()):
+        if p.is_file() and p.name.startswith(stamp):
+            p.unlink(missing_ok=True)
+    return stamp
+
 def operational_monitor_loop():
     while True:
         try:
@@ -2828,6 +2867,13 @@ def operational_monitor_loop():
             du=shutil.disk_usage("/"); pct=round(du.used/du.total*100)
             sev="CRITICAL" if pct>=p["disk_critical"] else "HIGH" if pct>=p["disk_high"] else "MEDIUM" if pct>=p["disk_warn"] else None
             if sev: record_security_finding("HOST",sev,"disk_pressure","/",f"Host disk usage is {pct}%",f"Thresholds: {p['disk_warn']}/{p['disk_high']}/{p['disk_critical']}%")
+            if pct>=80:
+                ranking = site_backup_disk_usage()
+                if ranking:
+                    top_site, top_bytes = ranking[0]
+                    record_security_finding(top_site,"MEDIUM","backup_cleanup_suggested","backups",
+                        f"Disk usage is {pct}% - {top_site} has the most backup data on disk ({human_bytes(top_bytes)})",
+                        "Review and remove its oldest backup(s) if space needs freeing up.")
             for d in [x for x in SITES.iterdir() if x.is_dir()] if SITES.exists() else []:
                 site=d.name
                 for suffix in ("wp","db"):
@@ -2855,14 +2901,15 @@ def operational_monitor_loop():
         time.sleep(max(1,int(host_policy()["external_check_minutes"]))*60)
 
 def active_security_findings():
+    now = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(PLATFORM_DB) as db:
         rows = db.execute("""
             SELECT id,site,severity,finding_type,path,message,evidence,first_seen,last_seen,email_sent
             FROM security_findings
-            WHERE active=1
+            WHERE active=1 AND (dismissed_until IS NULL OR dismissed_until <= ?)
             ORDER BY CASE severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 ELSE 4 END,
                      last_seen DESC
-        """).fetchall()
+        """, (now,)).fetchall()
     return [
         dict(id=r[0],site=r[1],severity=r[2],finding_type=r[3],path=r[4] or "-",
              message=r[5],evidence=r[6] or "-",first_seen=format_adelaide(r[7]),last_seen=format_adelaide(r[8]),
@@ -6183,6 +6230,17 @@ def alerts_page():
         current_theme=current_user_theme(),
     )
 
+@APP.post("/alerts/dismiss/<int:finding_id>")
+@alerts_required
+def alerts_dismiss(finding_id):
+    dismissed_until = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    with sqlite3.connect(PLATFORM_DB) as db:
+        db.execute("UPDATE security_findings SET dismissed_until=? WHERE id=?", (dismissed_until, finding_id))
+        db.commit()
+    log_action("security_finding_dismiss", str(finding_id), "success", "snoozed 24h")
+    flash("Alert snoozed for 24 hours. It will reappear automatically if the issue is still present.")
+    return redirect(url_for("alerts_page"))
+
 @APP.post("/alerts/scan")
 @alerts_required
 def alerts_scan_now():
@@ -6790,6 +6848,23 @@ def restore_specific_backup(site, stamp):
         log_action("site_restore", site, "failed", str(e))
         flash(f"{site}: restore failed: {e}")
     return redirect(url_for("site_dashboard", site=site) + "#backups")
+
+@APP.post("/action/<site>/remove-oldest-backup")
+@operator_required
+def remove_oldest_backup_action(site):
+    if not SITE_RE.match(site):
+        abort(404)
+    try:
+        stamp = remove_oldest_backup(site)
+        if stamp:
+            log_action("site_backup_cleanup", site, "success", f"removed {stamp}")
+            flash(f"{site}: removed oldest backup ({stamp}).")
+        else:
+            flash(f"{site}: no backups found to remove.")
+    except Exception as e:
+        log_action("site_backup_cleanup", site, "failed", str(e))
+        flash(f"{site}: could not remove backup: {e}")
+    return redirect(request.referrer or url_for("alerts_page"))
 
 @APP.post("/action/<site>/<action>")
 @operator_required

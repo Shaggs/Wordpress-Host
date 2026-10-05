@@ -1,5 +1,9 @@
 # Changelog
 
+## 9.16.0
+- Added a staff-approved backup cleanup suggestion: when host disk usage crosses 80%, the platform identifies the site whose backups are using the most disk space (measured by total size, not file count, since that's what actually frees space) and raises an alert naming it. A "Remove Oldest Backup" button lets staff trigger cleanup themselves, one backup set at a time - nothing is deleted automatically, matching how two servers recently hit 100% disk usage with no earlier warning.
+- This reuses the existing Alerts page "Dismiss for 24h" snooze mechanism - the same auto-resolve-if-it-clears-on-its-own behavior applies here too.
+
 ## 9.15.0
 - Added the ability to restore a site from a specific backup, not just the most recent one - a "Restore" button now appears on each row of the Backup History table. The existing quick "restore latest" action is unchanged. The backup identifier is validated against the exact timestamp format our own backups use before being used to build a file path (tested against path-traversal and injection attempts).
 - Stopped exposing the WordPress admin password in plain text after site creation. It's now flashed under its own category and rendered as a masked input with Show/Hide and Copy buttons, shown once. The Copy button reads the password back from the input's own DOM value rather than re-embedding it in a JS string literal, which would otherwise be a real bug (and a minor XSS risk) for a password containing a quote or backslash.
