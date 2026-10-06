@@ -1,5 +1,15 @@
 # Changelog
 
+## 9.17.0
+- Added Payload CMS as a third site type (Next.js-based, Payload 3.x) with its own MongoDB container. A fresh blank Payload starter is scaffolded automatically; creation returns immediately and a background job pulls images, installs, builds, starts the app, provisions proxy/SSL (port 3000) and registers the first admin. Status shows BUILDING, then RUNNING, or BUILD-FAILED with an alert email.
+- Payload's first admin is registered by the platform itself (Admin Email/Password from the form) via Payload's first-register endpoint, closing the window where whoever opened /admin first would become the administrator.
+- Payload backups archive the project without node_modules/.next plus a MongoDB dump; restore puts both back and rebuilds in the background. New Rebuild & Restart button in the More menu. phpMyAdmin and Maintenance mode are not available for Payload sites and now say so clearly.
+- Restore is now site-type aware (HTML/PHP webroot and service names, database only when the site has one, newest complete backup set rather than independently newest archive and dump).
+- Wordfence vulnerability feed matching is now enabled by default (the API key remains optional).
+- Fixed shared bugs found along the way: list_sites() never exposed the site type to templates (so earlier WordPress-only menu rules never worked); health, uptime and quarantine hard-coded the -wp container; HTML/PHP sites without a database were always reported UNHEALTHY; SFTP always mounted the wordpress folder (wrong for HTML/PHP); the Create form made the optional admin password required after switching site types.
+- Payload sites are not covered by the WordPress plugin/vulnerability scanner (as with HTML/PHP sites).
+- Not yet verified end-to-end with live containers (MongoDB, proxy/SSL, SFTP, restore) - test on a non-production box before relying on it.
+
 ## 9.16.0
 - Added a staff-approved backup cleanup suggestion: when host disk usage crosses 80%, the platform identifies the site whose backups are using the most disk space (measured by total size, not file count, since that's what actually frees space) and raises an alert naming it. A "Remove Oldest Backup" button lets staff trigger cleanup themselves, one backup set at a time - nothing is deleted automatically, matching how two servers recently hit 100% disk usage with no earlier warning.
 - This reuses the existing Alerts page "Dismiss for 24h" snooze mechanism - the same auto-resolve-if-it-clears-on-its-own behavior applies here too.

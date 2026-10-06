@@ -291,7 +291,7 @@ label{display:block;font-weight:700;font-size:12px;margin-bottom:4px;color:var(-
 <div class="main"><header class="top"><h1>Sites</h1><a href="/">← Dashboard</a></header><main class="content">
 <div class="toolbar"><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"><div>{% if current_role in ['admin','user'] %}<button class="btn" type="button" onclick="const x=document.getElementById('newSite');x.style.display=x.style.display==='none'?'block':'none'">＋ New Site</button>{% endif %} &nbsp; {{ sites|length }} hosted site(s)</div></div>
 {% if current_role in ['admin','user'] %}<div id="newSite" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:16px"><h3>Create Site</h3><form method="post" action="/create"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px">
-<label>Site Type<select name="site_type" id="siteType" onchange="toggleSiteType()"><option value="wordpress">WordPress</option><option value="html_php">HTML / PHP</option></select></label>
+<label>Site Type<select name="site_type" id="siteType" onchange="toggleSiteType()"><option value="wordpress">WordPress</option><option value="html_php">HTML / PHP</option><option value="payload">Payload CMS</option></select></label>
 <label>Site ID<input name="site" required placeholder="Site ID"></label>
 <label>Domain<input name="domain" required placeholder="Domain"></label>
 <label>Memory<select name="memory"><option>1g</option><option>2g</option><option>4g</option></select></label>
@@ -307,9 +307,11 @@ label{display:block;font-weight:700;font-size:12px;margin-bottom:4px;color:var(-
 function toggleSiteType(){
   var t = document.getElementById('siteType').value;
   document.querySelectorAll('.wpOnly').forEach(function(el){
-    el.style.display = t==='wordpress' ? '' : 'none';
     var field = el.querySelector('input,select');
-    if(field) field.required = (t==='wordpress');
+    var isUser = !!field && field.name === 'wp_admin';
+    var show = (t==='wordpress') || (t==='payload' && !isUser);
+    el.style.display = show ? '' : 'none';
+    if(field) field.required = show && (field.name==='wp_email' || (field.name==='wp_admin' && t==='wordpress'));
   });
   document.querySelectorAll('.phpOnly').forEach(function(el){el.style.display = t==='html_php' ? '' : 'none';});
 }
@@ -388,7 +390,8 @@ SITE_HTML = r"""
 <div class="moreitem"><b>Staging</b><p>Create an isolated WordPress and database clone.</p><form method="post" action="/staging-clone/{{ site.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Clone</button></form></div>
 <div class="moreitem">{% if site.mode == 'quarantine' %}<b class="good">Quarantined</b><p>This site is disconnected from the proxy - not publicly reachable.</p><form method="post" action="/site-mode/{{ site.site }}/live"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Restore Access</button></form>{% else %}<b class="bad">Quarantine</b><p>Immediately remove this WordPress container from public proxy access.</p><form method="post" action="/site-mode/{{ site.site }}/quarantine"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Quarantine</button></form>{% endif %}</div>
 <div class="moreitem">{% if site.status == 'running' %}<b>Stop</b><p>Stop the WordPress container.</p><form method="post" action="/action/{{ site.site }}/stop"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Stop Site</button></form>{% else %}<b class="good">Start</b><p>Start the stopped WordPress container.</p><form method="post" action="/action/{{ site.site }}/start"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn green">Start Site</button></form>{% endif %}</div>
-{% if site.type != 'html_php' %}<div class="moreitem"><b>Login Reporting</b><p>Report WordPress administrator logins (username + IP) back to the dashboard.</p><form method="post" action="/action/{{ site.site }}/install-login-reporter"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Install / Reinstall</button></form></div>{% endif %}
+{% if site.type not in ['html_php','payload'] %}<div class="moreitem"><b>Login Reporting</b><p>Report WordPress administrator logins (username + IP) back to the dashboard.</p><form method="post" action="/action/{{ site.site }}/install-login-reporter"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Install / Reinstall</button></form></div>{% endif %}
+{% if site.type == 'payload' %}<div class="moreitem"><b>Rebuild</b><p>Reinstall dependencies, rebuild the Payload app and restart it. Use this after changing the project's code over SFTP. The site is briefly offline while it builds.</p>{% if site.build_error %}<p style="color:#fb7185;font-size:12px;word-break:break-word">Last build failed: {{ site.build_error[-300:] }}</p>{% endif %}<form method="post" action="/action/{{ site.site }}/payload-rebuild"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Rebuild &amp; Restart</button></form></div>{% endif %}
 <div class="moreitem"><b class="bad">Delete</b><p>Permanently deletes the site's files and database. Only the most recent backup is kept.</p><form id="deleteForm" method="post" action="/action/{{ site.site }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form><button type="button" class="btn red" onclick="document.getElementById('deleteModalOverlay').style.display='flex'">Delete</button></div>
 <div id="deleteModalOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center">
 <div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;max-width:420px;width:90%">
@@ -490,7 +493,7 @@ HTML = r"""
 <div class="userbox"><div class="avatar">{{ current_user[:1]|upper }}</div><div><strong>{{ current_user }}</strong><div class="muted">{{ current_role|title }}</div></div></div><p><a href="/logout">⇱ Log out</a></p></div>
 </aside>
 <div class="content"><header class="top"><h1>Dashboard</h1><div><form method="post" action="/account/theme" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="theme" onchange="this.form.submit()" title="Colour scheme"><option value="midnight" {{ 'selected' if current_theme=='midnight' else '' }}>🌙 Midnight</option><option value="light" {{ 'selected' if current_theme=='light' else '' }}>☀ Light</option><option value="forest" {{ 'selected' if current_theme=='forest' else '' }}>🌲 Forest</option><option value="sunset" {{ 'selected' if current_theme=='sunset' else '' }}>🌇 Sunset</option></select></form><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"> <a class="btn blue" href="/">↻ Refresh</a></div></header><main>
-{% with messages = get_flashed_messages(with_categories=true) %}{% for category, m in messages %}{% if category == 'wp_password_reveal' %}<div class="flash" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>WordPress admin password:</span><input type="password" id="wp-pw-reveal" value="{{ m }}" readonly style="max-width:220px;background:#0b1727;color:#fff;border:1px solid var(--line);border-radius:6px;padding:6px 8px"><button type="button" class="btn" onclick="var el=document.getElementById('wp-pw-reveal'); el.type = el.type==='password' ? 'text' : 'password'; this.textContent = el.type==='password' ? 'Show' : 'Hide';">Show</button><button type="button" class="btn blue" onclick="navigator.clipboard.writeText(document.getElementById('wp-pw-reveal').value); this.textContent='Copied!'; var b=this; setTimeout(function(){b.textContent='Copy';},1500);">Copy</button><span class="muted" style="font-size:12px">Save this now - it won't be shown again.</span></div>{% else %}<div class="flash">{{ m }}</div>{% endif %}{% endfor %}{% endwith %}
+{% with messages = get_flashed_messages(with_categories=true) %}{% for category, m in messages %}{% if category == 'wp_password_reveal' %}<div class="flash" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>Admin password:</span><input type="password" id="wp-pw-reveal" value="{{ m }}" readonly style="max-width:220px;background:#0b1727;color:#fff;border:1px solid var(--line);border-radius:6px;padding:6px 8px"><button type="button" class="btn" onclick="var el=document.getElementById('wp-pw-reveal'); el.type = el.type==='password' ? 'text' : 'password'; this.textContent = el.type==='password' ? 'Show' : 'Hide';">Show</button><button type="button" class="btn blue" onclick="navigator.clipboard.writeText(document.getElementById('wp-pw-reveal').value); this.textContent='Copied!'; var b=this; setTimeout(function(){b.textContent='Copy';},1500);">Copy</button><span class="muted" style="font-size:12px">Save this now - it won't be shown again.</span></div>{% else %}<div class="flash">{{ m }}</div>{% endif %}{% endfor %}{% endwith %}
 <div class="kpis"><div class="kpi"><strong>{{ site_summary.total }}</strong>Total Sites<small>All sites on this server</small></div><div class="kpi"><strong class="good">{{ site_summary.running }}</strong>Running<small>Active and healthy</small></div><div class="kpi"><strong class="warn">{{ site_summary.not_created }}</strong>Not Created<small>Awaiting setup</small></div><div class="kpi"><strong>{{ site_summary.backups }}</strong>Total Backups<small>Across all sites</small></div><div class="kpi"><strong>{{ host_stats.disk_used }}</strong>Storage Used<small>Host filesystem</small></div></div>
 {% if alerts %}<section class="section"><div class="sectionhead"><h2>Active Alerts</h2></div>{% for a in alerts %}<div class="flash"><b>{{ a.site }}</b>: {{ a.message }}</div>{% endfor %}</section>{% endif %}
 <section class="section">
@@ -1254,17 +1257,17 @@ def npm_create_certificate(domain):
         raise RuntimeError(f"SSL request failed: HTTP {r.status_code}: {r.text[:500]}")
     return r.json()
 
-def npm_create_proxy(site, domain, certificate_id=0, forward_host=None):
+def npm_create_proxy(site, domain, certificate_id=0, forward_host=None, forward_port=80):
     existing = npm_existing_proxy(domain)
     desired_host = forward_host or f"{site}-wp"
     if existing:
-        if existing.get("forward_host") != desired_host or int(existing.get("forward_port", 80)) != 80 or existing.get("forward_scheme") != "http":
+        if existing.get("forward_host") != desired_host or int(existing.get("forward_port", 80)) != forward_port or existing.get("forward_scheme") != "http":
             proxy_id = existing.get("id")
             payload = {
                 "domain_names": existing.get("domain_names", [domain]),
                 "forward_scheme": "http",
                 "forward_host": desired_host,
-                "forward_port": 80,
+                "forward_port": forward_port,
                 "access_list_id": existing.get("access_list_id", 0) or 0,
                 "certificate_id": int(existing.get("certificate_id", 0) or certificate_id or 0),
                 "ssl_forced": bool(existing.get("ssl_forced", False)),
@@ -1295,7 +1298,7 @@ def npm_create_proxy(site, domain, certificate_id=0, forward_host=None):
         "domain_names": [domain],
         "forward_scheme": "http",
         "forward_host": desired_host,
-        "forward_port": 80,
+        "forward_port": forward_port,
         "access_list_id": 0,
         "certificate_id": int(certificate_id or 0),
         "ssl_forced": bool(certificate_id),
@@ -1375,9 +1378,9 @@ def resolve_domain(domain):
     except Exception:
         return []
 
-def provision_proxy_ssl(site, domain, forward_host=None):
+def provision_proxy_ssl(site, domain, forward_host=None, forward_port=80):
     wait_for_npm()
-    proxy = npm_create_proxy(site, domain, 0, forward_host=forward_host)
+    proxy = npm_create_proxy(site, domain, 0, forward_host=forward_host, forward_port=forward_port)
     cert = npm_create_certificate(domain)
     cert_id = cert.get("id")
     if not cert_id:
@@ -1773,6 +1776,8 @@ def ensure_phpmyadmin(site, requested_port=None):
         raise RuntimeError("Site not found.")
 
     meta = site_metadata(site_dir)
+    if (meta or {}).get("type") == "payload":
+        raise RuntimeError("phpMyAdmin is not available for Payload sites - they use MongoDB, not MySQL.")
     container = phpmyadmin_container_name(site)
     preferred = requested_port if requested_port is not None else meta.get("phpmyadmin_port")
     port = allocate_phpmyadmin_port(site=site, preferred=preferred)
@@ -1936,14 +1941,15 @@ def enable_sftp(site, requested_port=None):
     except Exception:
         pass
 
-    wordpress_path = str(site_dir / "wordpress")
+    _sftp_folder, _sftp_uid = site_sftp_target(site_dir)
+    wordpress_path = str(site_dir / _sftp_folder)
 
     # Bootstrap credential creates the account only. The real generated credential
     # is applied explicitly after the container is running.
     c = docker_client.containers.run(
         "atmoz/sftp:alpine",
         name=container_name,
-        command="wordpress:BootstrapOnly123:33:33:upload",
+        command=f"wordpress:BootstrapOnly123:{_sftp_uid}:{_sftp_uid}:upload",
         detach=True,
         restart_policy={"Name": "unless-stopped"},
         ports={"22/tcp": ("0.0.0.0", port)},
@@ -2034,28 +2040,38 @@ def disable_sftp(site):
 
 def site_health(site, domain):
     result = {"container": "unknown", "db": "unknown", "http": "unknown", "healthy": False}
+    meta = site_metadata(SITES / site) or {}
+    stype = meta.get("type", "wordpress")
+    needs_db = stype != "html_php" or meta.get("has_database", False)
+    probe = ["node","-e","process.exit(0)"] if stype == "payload" else ["php","-r","echo 'ok';"]
     try:
-        wp = docker_client.containers.get(f"{site}-wp")
+        wp = docker_client.containers.get(site_app_container_name(site, meta))
         wp.reload()
         result["container"] = wp.status
         if wp.status == "running":
-            ex = wp.exec_run(["php","-r","echo 'ok';"])
+            ex = wp.exec_run(probe)
             result["container"] = "running" if ex.exit_code == 0 else "degraded"
     except Exception:
         result["container"] = "missing"
-    try:
-        db = docker_client.containers.get(f"{site}-db")
-        db.reload()
-        result["db"] = db.status
-    except Exception:
-        result["db"] = "missing"
+    if needs_db:
+        try:
+            db = docker_client.containers.get(f"{site}-db")
+            db.reload()
+            result["db"] = db.status
+        except Exception:
+            result["db"] = "missing"
+    else:
+        result["db"] = "n/a"
     try:
         p = subprocess.run(["curl","-kfsS","--max-time","5",f"https://{domain}/"], capture_output=True, timeout=8)
         result["http"] = "ok" if p.returncode == 0 else "failed"
     except Exception:
         result["http"] = "failed"
-    result["healthy"] = result["container"] == "running" and result["db"] == "running" and result["http"] == "ok"
+    result["healthy"] = (result["container"] == "running"
+                         and (result["db"] == "running" or not needs_db)
+                         and result["http"] == "ok")
     return result
+
 
 def wp_versions(site):
     data = {"core":"-","plugins":"-","themes":"-"}
@@ -3103,7 +3119,7 @@ def replicate_backup_set_to_nas(site, stamp):
     source = backup_root() / site
     dest = backup_mount_path(cfg) / site
     dest.mkdir(parents=True, exist_ok=True)
-    candidates = [source/f"{stamp}.tar.gz", source/f"{stamp}-database.sql.gz", source/f"{stamp}-database.sql"]
+    candidates = [source/f"{stamp}.tar.gz", source/f"{stamp}-database.sql.gz", source/f"{stamp}-database.sql", source/f"{stamp}-database.archive.gz"]
     copied = 0
     for src in candidates:
         if not src.exists(): continue
@@ -3221,6 +3237,336 @@ def site_metadata(site_dir):
         return json.loads(meta.read_text())
     return {}
 
+PAYLOAD_NODE_IMAGE = "node:22-bookworm-slim"
+PAYLOAD_MONGO_IMAGE = "mongo:7"
+PAYLOAD_SCAFFOLD_VERSION = "3.90.2"
+PAYLOAD_APP_PORT = 3000
+PAYLOAD_BUILD_STALE_SECONDS = 90 * 60
+
+PAYLOAD_DB_URL = "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@db:27017/${MONGO_DB}?authSource=admin"
+
+PAYLOAD_COMPOSE_TEMPLATE = """services:
+  db:
+    image: __MONGO_IMAGE__
+    container_name: __SITE__-db
+    restart: unless-stopped
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - db_data:/data/db
+    mem_limit: ${DB_MEMORY}
+    cpus: 0.50
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+  app:
+    image: __NODE_IMAGE__
+    container_name: __SITE__-app
+    restart: unless-stopped
+    user: "1000:1000"
+    working_dir: /app
+    command: ["npm", "start"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      HOME: /tmp
+      NEXT_TELEMETRY_DISABLED: "1"
+      PAYLOAD_SECRET: ${PAYLOAD_SECRET}
+      DATABASE_URL: __DB_URL__
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./app:/app
+    mem_limit: ${APP_MEMORY}
+    cpus: ${APP_CPUS}
+    networks:
+      - internal
+      - wp-proxy
+  builder:
+    profiles: ["build"]
+    image: __NODE_IMAGE__
+    user: "1000:1000"
+    working_dir: /app
+    environment:
+      HOME: /tmp
+      NEXT_TELEMETRY_DISABLED: "1"
+      PAYLOAD_SECRET: ${PAYLOAD_SECRET}
+      DATABASE_URL: __DB_URL__
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./app:/app
+    networks:
+      - internal
+      - wp-proxy
+volumes:
+  db_data:
+networks:
+  internal:
+    internal: true
+  wp-proxy:
+    external: true
+    name: __PROXY_NETWORK__
+"""
+
+# Scaffolds a fresh blank Payload project into /app (the bind-mounted site
+# folder), then pins the project's .env to this site's own database URL and
+# secret. Runs inside the throwaway builder container as uid 1000.
+PAYLOAD_SCAFFOLD_SH = (
+    "set -e; rm -rf /tmp/scaffold; mkdir -p /tmp/scaffold; cd /tmp/scaffold; "
+    "npx --yes create-payload-app@__SCAFFOLD_VERSION__ -n payload-app -t blank "
+    "--db mongodb --db-connection-string \"$DATABASE_URL\" --use-npm --no-deps --no-agent </dev/null; "
+    "cp -a /tmp/scaffold/payload-app/. /app/; "
+    "printf 'DATABASE_URL=%s\\nPAYLOAD_SECRET=%s\\n' \"$DATABASE_URL\" \"$PAYLOAD_SECRET\" > /app/.env"
+).replace("__SCAFFOLD_VERSION__", PAYLOAD_SCAFFOLD_VERSION)
+
+PAYLOAD_BUILD_SH = "set -e; cd /app; npm install --no-audit --no-fund; npm run build"
+
+
+def site_app_container_name(site, meta=None):
+    """The container that actually serves a site, by site type."""
+    if meta is None:
+        meta = site_metadata(SITES / site) or {}
+    stype = meta.get("type", "wordpress")
+    if stype == "html_php":
+        return f"{site}-web"
+    if stype == "payload":
+        return f"{site}-app"
+    return f"{site}-wp"
+
+
+def site_sftp_target(site_dir):
+    """(folder, uid) the SFTP account should be mounted on / run as, by
+    site type. The uid has to match the user the site's own container
+    runs as, or uploaded files aren't writable by the site (and vice
+    versa)."""
+    stype = (site_metadata(site_dir) or {}).get("type", "wordpress")
+    if stype == "payload":
+        return "app", 1000
+    if stype == "html_php":
+        return "site", 33
+    return "wordpress", 33
+
+
+def _payload_update_meta(site, **fields):
+    path = SITES / site / "site.json"
+    meta = json.loads(path.read_text()) if path.exists() else {}
+    meta.update(fields)
+    path.write_text(json.dumps(meta, indent=2))
+    return meta
+
+
+def payload_compose_text(site):
+    return (PAYLOAD_COMPOSE_TEMPLATE
+            .replace("__SITE__", site)
+            .replace("__MONGO_IMAGE__", PAYLOAD_MONGO_IMAGE)
+            .replace("__NODE_IMAGE__", PAYLOAD_NODE_IMAGE)
+            .replace("__PROXY_NETWORK__", PROXY_NETWORK)
+            .replace("__DB_URL__", PAYLOAD_DB_URL))
+
+
+def payload_run_builder(site, script, timeout):
+    """Runs a shell script inside the throwaway builder container (same
+    image, volumes, env and networks as the site, but no memory cap -
+    a Next.js production build needs several GB)."""
+    run(["docker", "compose", "--profile", "build", "run", "--rm", "-T",
+         "builder", "sh", "-lc", script],
+        cwd=SITES / site, timeout=timeout)
+
+
+def payload_wait_db_healthy(site, timeout=180):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            c = docker_client.containers.get(f"{site}-db")
+            c.reload()
+            if c.attrs.get("State", {}).get("Health", {}).get("Status") == "healthy":
+                return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
+
+
+def payload_wait_ready(site, timeout=300):
+    js = ("fetch('http://127.0.0.1:3000/api/users/me')"
+          ".then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            c = docker_client.containers.get(f"{site}-app")
+            c.reload()
+            if c.status == "running" and c.exec_run(["node", "-e", js]).exit_code == 0:
+                return True
+        except Exception:
+            pass
+        time.sleep(5)
+    return False
+
+
+def payload_create_first_user(site, email, password):
+    """Registers the first admin through Payload's own first-register
+    endpoint. That endpoint only works while NO user exists yet, so it is
+    safe to call (it is refused if anyone got there first) - and doing
+    it automatically closes the window where whoever opens /admin first
+    would otherwise become the site's administrator."""
+    js = ("fetch('http://127.0.0.1:3000/api/users/first-register',"
+          "{method:'POST',headers:{'Content-Type':'application/json'},body:process.env.FU_BODY})"
+          ".then(async r=>{const t=await r.text();console.log(r.status+' '+t.slice(0,200));"
+          "process.exit(r.status<300?0:1)}).catch(e=>{console.log(String(e));process.exit(1)})")
+    c = docker_client.containers.get(f"{site}-app")
+    ex = c.exec_run(["node", "-e", js],
+                    environment={"FU_BODY": json.dumps({"email": email, "password": password})})
+    return ex.exit_code == 0, (ex.output or b"").decode(errors="ignore")[-300:]
+
+
+def _payload_deploy_worker(site, first_run=False, domain="", auto_proxy=True,
+                           admin_email="", admin_password=""):
+    """Background worker: (scaffold,) install, build, start. Runs in a
+    thread because a first build takes minutes - far longer than a
+    request should be held open (and longer than a reverse proxy in
+    front of the dashboard will wait)."""
+    site_dir = SITES / site
+    try:
+        if first_run:
+            run(["docker", "compose", "pull"], cwd=site_dir, timeout=1800)
+            payload_run_builder(site, PAYLOAD_SCAFFOLD_SH, 1200)
+        else:
+            run(["docker", "compose", "stop", "app"], cwd=site_dir, timeout=120, check=False)
+        payload_run_builder(site, PAYLOAD_BUILD_SH, 3000)
+        run(["docker", "compose", "up", "-d", "app"], cwd=site_dir, timeout=300)
+        _payload_update_meta(site, build_status="ready", build_finished=time.time(), build_error=None)
+    except Exception as exc:
+        _payload_update_meta(site, build_status="failed", build_error=str(exc)[-1500:])
+        try:
+            send_alert_email(
+                f"Payload build failed: {site}",
+                f"The Payload CMS build for {site} failed.\n\n{str(exc)[-1500:]}\n\n"
+                "Fix the cause, then use Rebuild in the site's More menu.")
+        except Exception:
+            pass
+        return
+
+    if not first_run:
+        return
+
+    ready = payload_wait_ready(site, 300)
+
+    if auto_proxy:
+        try:
+            provisioned = provision_proxy_ssl(site, domain, forward_host=f"{site}-app",
+                                              forward_port=PAYLOAD_APP_PORT)
+            _payload_update_meta(site, proxy_status="provisioned", **provisioned)
+        except Exception as exc:
+            _payload_update_meta(site, proxy_status="failed", proxy_error=str(exc))
+
+    if admin_email:
+        if ready:
+            ok, detail = payload_create_first_user(site, admin_email, admin_password)
+        else:
+            ok, detail = False, "the app did not become ready in time"
+        _payload_update_meta(site, first_user="created" if ok else "failed",
+                             first_user_detail=detail)
+        if not ok:
+            try:
+                send_alert_email(
+                    f"Payload first admin NOT created: {site}",
+                    f"The first admin account for {site} could not be created automatically "
+                    f"({detail}). Until someone registers it, whoever opens "
+                    f"https://{domain}/admin first becomes the administrator - "
+                    "register it yourself immediately.")
+            except Exception:
+                pass
+
+
+def payload_start_rebuild(site, **worker_kwargs):
+    """Starts a background build unless one is already in progress.
+    Returns True if started, False if a recent build is still running."""
+    meta = site_metadata(SITES / site) or {}
+    if (meta.get("build_status") == "building"
+            and time.time() - float(meta.get("build_started") or 0) < PAYLOAD_BUILD_STALE_SECONDS):
+        return False
+    _payload_update_meta(site, build_status="building", build_started=time.time(), build_error=None)
+    threading.Thread(target=_payload_deploy_worker, args=(site,),
+                     kwargs=worker_kwargs, daemon=True).start()
+    return True
+
+
+def create_payload_site(site, domain, memory, cpus, db_memory, admin_email, admin_password, auto_proxy=True):
+    site = site.lower().strip()
+    domain = domain.lower().strip()
+    admin_email = (admin_email or "").strip()
+    if not SITE_RE.match(site):
+        raise ValueError("Site ID must use lowercase letters, numbers and hyphens only (max 40).")
+    if not DOMAIN_RE.match(domain):
+        raise ValueError("Domain does not look valid.")
+    if not valid_memory(memory) or not valid_memory(db_memory):
+        raise ValueError("Invalid memory setting.")
+    if cpus not in {"0.50", "1.00", "2.00", "4.00"}:
+        raise ValueError("Invalid CPU setting.")
+    if admin_email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", admin_email):
+        raise ValueError("Admin email does not look valid.")
+
+    site_dir = SITES / site
+    if site_dir.exists():
+        raise ValueError("That Site ID already exists.")
+
+    admin_password = (admin_password or "").strip() or secrets.token_urlsafe(18)
+
+    site_dir.mkdir(parents=True)
+    app_dir = site_dir / "app"
+    app_dir.mkdir()
+    try:
+        os.chown(app_dir, 1000, 1000)
+    except Exception:
+        os.chmod(app_dir, 0o777)
+
+    env_lines = [
+        f"SITE={site}", f"DOMAIN={domain}",
+        "MONGO_USER=app", f"MONGO_PASSWORD={secrets.token_urlsafe(32)}", "MONGO_DB=app",
+        f"PAYLOAD_SECRET={secrets.token_hex(32)}",
+        f"APP_MEMORY={memory}", f"APP_CPUS={cpus}", f"DB_MEMORY={db_memory}",
+    ]
+    (site_dir / ".env").write_text("\n".join(env_lines) + "\n")
+    os.chmod(site_dir / ".env", 0o600)
+    (site_dir / "compose.yml").write_text(payload_compose_text(site))
+
+    meta = dict(site=site, domain=domain, type="payload", has_database=True, db_engine="mongodb",
+                memory=memory, cpus=cpus, db_memory=db_memory, created=datetime.now().isoformat(),
+                admin_email=admin_email, build_status="building", build_started=time.time(),
+                proxy_status="pending" if auto_proxy else "not_requested")
+    if auto_proxy:
+        meta["dns_addresses"] = resolve_domain(domain)
+    (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
+
+    threading.Thread(
+        target=_payload_deploy_worker, args=(site,),
+        kwargs=dict(first_run=True, domain=domain, auto_proxy=auto_proxy,
+                    admin_email=admin_email, admin_password=admin_password),
+        daemon=True).start()
+    return admin_password, meta
+
+
 def list_sites():
     result = []
     SITES.mkdir(parents=True, exist_ok=True)
@@ -3230,7 +3576,7 @@ def list_sites():
             continue
         site = meta.get("site", d.name)
         site_type = meta.get("type", "wordpress")
-        web_name = f"{site}-web" if site_type == "html_php" else f"{site}-wp"
+        web_name = site_app_container_name(site, meta)
         try:
             c = docker_client.containers.get(web_name)
             c.reload()
@@ -3249,7 +3595,7 @@ def list_sites():
             except Exception:
                 pass
             wp_version = "-"
-            if site_type != "html_php" and status == "running":
+            if site_type == "wordpress" and status == "running":
                 try:
                     ex = c.exec_run(["php","-r","include '/var/www/html/wp-includes/version.php'; echo $wp_version;"])
                     if ex.exit_code == 0:
@@ -3258,6 +3604,12 @@ def list_sites():
                     pass
         except Exception:
             status, cpu, memory, size, wp_version, ip = "not-created", "-", "-", "-", "-", "-"
+            if site_type == "payload":
+                _bs = meta.get("build_status")
+                if _bs == "building" and time.time() - float(meta.get("build_started") or 0) < PAYLOAD_BUILD_STALE_SECONDS:
+                    status = "building"
+                elif _bs in ("building", "failed"):
+                    status = "build-failed"
 
         bdir = backup_root() / site
         latest = "-"
@@ -3268,12 +3620,15 @@ def list_sites():
 
         health = site_health(site, meta.get("domain","-"))
         versions = wp_versions(site)
-        live = container_live_stats(f"{site}-wp")
+        live = container_live_stats(web_name)
         sftp = sftp_status(site)
         pma = phpmyadmin_status(site)
         ops = get_site_ops(site)
         result.append(dict(
             site=site,
+            type=site_type,
+            build_status=meta.get("build_status"),
+            build_error=meta.get("build_error"),
             domain=meta.get("domain","-"),
             status=status,
             cpu=cpu,
@@ -3330,7 +3685,7 @@ def site_runtime_details(site):
     }
 
     try:
-        wp = docker_client.containers.get(f"{site}-wp")
+        wp = docker_client.containers.get(site_app_container_name(site))
         wp.reload()
         started = wp.attrs.get("State",{}).get("StartedAt")
         if started:
@@ -3749,7 +4104,7 @@ def backup_site(site):
 
     meta = site_metadata(site_dir) or {}
     site_type = meta.get("type", "wordpress")
-    web_dir_name = "site" if site_type == "html_php" else "wordpress"
+    web_dir_name = {"html_php": "site", "payload": "app"}.get(site_type, "wordpress")
     has_db = site_type != "html_php" or meta.get("has_database", False)
 
     env = {}
@@ -3757,7 +4112,18 @@ def backup_site(site):
         if "=" in line:
             k,v=line.split("=",1); env[k]=v
 
-    if has_db:
+    if has_db and site_type == "payload":
+        dbfile = dest / f"{stamp}-database.archive.gz"
+        with dbfile.open("wb") as f:
+            p = subprocess.run(
+                ["docker","exec",f"{site}-db","mongodump","--archive","--gzip",
+                 "-u",env["MONGO_USER"],"-p",env["MONGO_PASSWORD"],
+                 "--authenticationDatabase","admin","--db",env["MONGO_DB"]],
+                stdout=f, stderr=subprocess.PIPE, timeout=600
+            )
+            if p.returncode != 0:
+                raise RuntimeError(p.stderr.decode(errors="ignore")[-500:])
+    elif has_db:
         dbfile = dest / f"{stamp}-database.sql"
         with dbfile.open("wb") as f:
             p = subprocess.run(
@@ -3770,7 +4136,8 @@ def backup_site(site):
         run(["gzip","-f",str(dbfile)])
 
     archive = dest / f"{stamp}.tar.gz"
-    run(["tar","-czf",str(archive),"-C",str(site_dir),web_dir_name,"compose.yml",".env","site.json"], timeout=1200)
+    tar_excludes = ["--exclude=app/node_modules", "--exclude=app/.next"] if site_type == "payload" else []
+    run(["tar","-czf",str(archive)] + tar_excludes + ["-C",str(site_dir),web_dir_name,"compose.yml",".env","site.json"], timeout=1200)
     try:
         ok, detail = replicate_backup_set_to_nas(site, stamp)
         if load_backup_storage().get("server"):
@@ -3781,35 +4148,62 @@ def backup_site(site):
 
 def restore_backup(site, stamp=None):
     """Restores a site from a backup set. If stamp is None, picks the
-    most recent complete set (the original behavior). If stamp is
-    given, it must be a specific backup's timestamp identifier (e.g.
-    "20261001-020000") - validated against the exact format our own
-    backups use, to rule out any path-traversal via this value."""
+    most recent complete set. If stamp is given, it must be a specific
+    backup's timestamp identifier (e.g. "20261001-020000") - validated
+    against the exact format our own backups use, to rule out any
+    path-traversal via this value.
+
+    Site-type aware: a WordPress site's webroot is "wordpress" and its
+    compose service is "wordpress"; an HTML/PHP site's webroot is
+    "site" and its compose service is "web". An HTML/PHP site only has
+    a database (and therefore only needs a database dump restored) if
+    it was created with one - matching exactly what backup_site()
+    actually produces for each site type, rather than assuming every
+    site is WordPress with a database."""
     site_dir = SITES / site
     bdir = backup_root() / site
     if not site_dir.exists() or not bdir.exists():
         raise ValueError("Site or backup directory not found.")
 
+    meta = site_metadata(site_dir) or {}
+    site_type = meta.get("type", "wordpress")
+    web_dir_name = {"html_php": "site", "payload": "app"}.get(site_type, "wordpress")
+    service_name = {"html_php": "web", "payload": "app"}.get(site_type, "wordpress")
+    expects_db = site_type != "html_php" or meta.get("has_database", False)
+    db_suffix = "-database.archive.gz" if site_type == "payload" else "-database.sql.gz"
+
     if stamp is not None:
         if not re.match(r'^\d{8}-\d{6}$', stamp):
             raise ValueError("Invalid backup identifier.")
         archive = bdir / f"{stamp}.tar.gz"
-        dbgz = bdir / f"{stamp}-database.sql.gz"
-        if not archive.exists() or not dbgz.exists():
-            raise ValueError(f"Backup set '{stamp}' not found or incomplete.")
+        dbgz = bdir / f"{stamp}{db_suffix}"
+        if not archive.exists():
+            raise ValueError(f"Backup set '{stamp}' not found.")
+        if expects_db and not dbgz.exists():
+            raise ValueError(f"Backup set '{stamp}' is missing its database dump.")
+        if not expects_db:
+            dbgz = None
     else:
-        archives = sorted(bdir.glob("*.tar.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
-        dbs = sorted(bdir.glob("*-database.sql.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
-        if not archives or not dbs:
+        archives = sorted(bdir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not archives:
+            raise ValueError("No backup found.")
+        archive = None
+        dbgz = None
+        for candidate in archives:
+            cstamp = candidate.name[:-len(".tar.gz")] if candidate.name.endswith(".tar.gz") else candidate.stem
+            cdbgz = bdir / f"{cstamp}{db_suffix}"
+            if not expects_db or cdbgz.exists():
+                archive = candidate
+                dbgz = cdbgz if expects_db else None
+                break
+        if archive is None:
             raise ValueError("No complete backup set found.")
-        archive = archives[0]
-        dbgz = dbs[0]
 
-    run(["docker","compose","stop","wordpress"], cwd=site_dir)
-    wpdir = site_dir / "wordpress"
-    safety = site_dir / f"wordpress.pre-restore-{int(time.time())}"
-    if wpdir.exists():
-        wpdir.rename(safety)
+    run(["docker","compose","stop",service_name], cwd=site_dir)
+    webdir = site_dir / web_dir_name
+    safety = site_dir / f"{web_dir_name}.pre-restore-{int(time.time())}"
+    if webdir.exists():
+        webdir.rename(safety)
     run(["tar","-xzf",str(archive),"-C",str(site_dir)], timeout=1200)
 
     env = {}
@@ -3817,11 +4211,23 @@ def restore_backup(site, stamp=None):
         if "=" in line:
             k,v=line.split("=",1); env[k]=v
 
-    run(["docker","compose","up","-d","db"], cwd=site_dir)
-    time.sleep(8)
-    cmd = f"gunzip -c {str(dbgz)} | docker exec -i {site}-db mariadb -u{env['DB_USER']} -p'{env['DB_PASSWORD']}' {env['DB_NAME']}"
-    run(["bash","-lc",cmd], timeout=1200)
-    run(["docker","compose","up","-d"], cwd=site_dir)
+    if expects_db and dbgz and site_type == "payload":
+        run(["docker","compose","up","-d","db"], cwd=site_dir)
+        if not payload_wait_db_healthy(site):
+            raise RuntimeError("MongoDB did not become healthy in time; restore aborted before touching the database.")
+        cmd = (f"docker exec -i {site}-db mongorestore --archive --gzip --drop "
+               f"-u {env['MONGO_USER']} -p '{env['MONGO_PASSWORD']}' --authenticationDatabase admin < {str(dbgz)}")
+        run(["bash","-lc",cmd], timeout=1200)
+    elif expects_db and dbgz:
+        run(["docker","compose","up","-d","db"], cwd=site_dir)
+        time.sleep(8)
+        cmd = f"gunzip -c {str(dbgz)} | docker exec -i {site}-db mariadb -u{env['DB_USER']} -p'{env['DB_PASSWORD']}' {env['DB_NAME']}"
+        run(["bash","-lc",cmd], timeout=1200)
+    if site_type == "payload":
+        # node_modules/.next are not in the archive; rebuild in the background, then start the app
+        payload_start_rebuild(site)
+    else:
+        run(["docker","compose","up","-d"], cwd=site_dir)
     shutil.rmtree(safety, ignore_errors=True)
     return archive.name
 
@@ -6268,8 +6674,11 @@ def set_site_mode_runtime(site, mode):
     if not site_dir.exists():
         raise RuntimeError("Site not found.")
 
-    wp = docker_client.containers.get(f"{site}-wp")
+    wp = docker_client.containers.get(site_app_container_name(site))
     proxy_net = docker_client.networks.get(PROXY_NETWORK)
+
+    if mode == "maintenance" and (site_metadata(site_dir) or {}).get("type", "wordpress") != "wordpress":
+        raise RuntimeError("Maintenance mode is only supported for WordPress sites. Use Quarantine to take this site offline.")
 
     if mode == "quarantine":
         try:
@@ -6540,7 +6949,7 @@ BACKUP_DESTINATION_HTML = """
 WORDFENCE_SETTINGS_FILE = BASE / "wordfence-settings.json"
 
 def load_wordfence_settings():
-    defaults = {"enabled": False, "api_key_saved": False}
+    defaults = {"enabled": True, "api_key_saved": False}
     try:
         if WORDFENCE_SETTINGS_FILE.exists():
             data = json.loads(WORDFENCE_SETTINGS_FILE.read_text())
@@ -6812,6 +7221,22 @@ def create():
                 flash(f"Site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}. Upload your files via SFTP to replace the placeholder page.")
             else:
                 flash("Site created. Upload your files via SFTP to replace the placeholder page.")
+        elif site_type == "payload":
+            password, meta = create_payload_site(
+                request.form.get("site",""),
+                request.form.get("domain",""),
+                request.form.get("memory","1g"),
+                request.form.get("cpus","1.00"),
+                request.form.get("db_memory","512m"),
+                request.form.get("wp_email",""),
+                request.form.get("wp_password",""),
+                request.form.get("auto_proxy","yes") == "yes",
+            )
+            log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
+            flash("Payload CMS site created and now building - the first build takes several minutes. "
+                  "Its status shows BUILDING until it finishes; the first admin account is created automatically "
+                  "once it is up. Payload sites run best with 2 GB of memory or more.")
+            flash(password, "wp_password_reveal")
         else:
             password, meta = create_site(
                 request.form.get("site",""),
@@ -6887,6 +7312,15 @@ def action(site, action):
         elif action == "update":
             run(["docker","compose","pull"], cwd=site_dir)
             run(["docker","compose","up","-d"], cwd=site_dir)
+        elif action == "payload-rebuild":
+            if (site_metadata(site_dir) or {}).get("type") != "payload":
+                flash(f"{site}: rebuild only applies to Payload sites.")
+                return redirect(request.referrer or url_for("site_dashboard", site=site))
+            started = payload_start_rebuild(site)
+            log_action("site_payload_rebuild", site, "success" if started else "skipped", "")
+            flash(f"{site}: rebuild started - the site is briefly offline while it builds." if started
+                  else f"{site}: a build is already running.")
+            return redirect(request.referrer or url_for("site_dashboard", site=site))
         elif action == "install-login-reporter":
             meta_path = site_dir / "site.json"
             meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
