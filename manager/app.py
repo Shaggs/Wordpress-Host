@@ -32,6 +32,7 @@ from flask import (
     Flask, request, redirect, url_for, flash,
     render_template_string, session, abort
 )
+from flask import jsonify  # used by /api/tasks and /api/wp-login-event
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_wtf.csrf import CSRFProtect
@@ -839,6 +840,550 @@ def alerts_required(fn):
     return wrapper
 
 
+import uuid
+import queue
+
+# ---------------------------------------------------------------------------
+# Background tasks
+#
+# Long operations run in a worker thread so the page responds immediately and
+# a progress card (bottom-right of every page) shows what is happening. A task
+# runs the ORIGINAL route handler unchanged, inside a copy of the caller's
+# request context (same form data, same signed-in user), so every handler
+# keeps working as written. Whatever the handler flash()es is captured and
+# handed back to the user's own session when the task finishes, so results
+# and one-time secrets (e.g. a new admin password) appear exactly as before.
+# ---------------------------------------------------------------------------
+_BG_LOCAL = threading.local()
+BG_RESULT_WINDOW_SECONDS = 1800
+BG_SECRET_FLASH_CATEGORIES = {"wp_password_reveal"}
+
+
+def _bg_env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# Resource guards. All overridable in manager.env; defaults suit a shared host.
+BG_MAX_HEAVY = max(1, _bg_env_int("WP_BG_MAX_HEAVY", 2))                     # heavy tasks running at once
+BG_MEM_RESERVE_MB = _bg_env_int("WP_BG_MEM_RESERVE_MB", 1536)                # RAM always left free for live sites
+BG_DISK_RESERVE_MB = _bg_env_int("WP_BG_DISK_RESERVE_MB", 5120)              # disk always left free for live sites
+BG_MAX_DISK_USED_PCT = _bg_env_int("WP_BG_MAX_DISK_USED_PCT", 92)            # refuse heavy work above this
+BG_BACKUP_DISK_RESERVE_MB = _bg_env_int("WP_BG_BACKUP_DISK_RESERVE_MB", 2048)
+BG_ADMISSION_WAIT_SECONDS = _bg_env_int("WP_BG_ADMISSION_WAIT_SECONDS", 180)  # how long to wait for memory
+BG_ADMISSION_POLL_SECONDS = 10
+_BG_QUEUE = queue.Queue()
+_BG_POOL_LOCK = threading.Lock()
+_BG_POOL = []
+
+
+def _bg_db():
+    return sqlite3.connect(PLATFORM_DB, timeout=10)
+
+
+def _bg_purge(db):
+    """Results nobody collected within the result window must not keep
+    one-time secrets (e.g. a new admin password) lying around; old rows go."""
+    now = time.time()
+    db.execute("UPDATE background_tasks SET flashes=NULL WHERE flashes IS NOT NULL AND finished IS NOT NULL AND finished < ?",
+               (now - BG_RESULT_WINDOW_SECONDS,))
+    db.execute("DELETE FROM background_tasks WHERE finished IS NOT NULL AND finished < ?", (now - 86400,))
+
+
+def bg_init():
+    with _bg_db() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS background_tasks (
+                id TEXT PRIMARY KEY,
+                owner TEXT NOT NULL,
+                title TEXT NOT NULL,
+                site TEXT,
+                lock_key TEXT,
+                heavy INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                progress INTEGER,
+                step TEXT,
+                started REAL NOT NULL,
+                finished REAL,
+                flashes TEXT,
+                message TEXT,
+                reveal INTEGER NOT NULL DEFAULT 0,
+                delivered INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        if "heavy" not in {row[1] for row in db.execute("PRAGMA table_info(background_tasks)").fetchall()}:
+            db.execute("ALTER TABLE background_tasks ADD COLUMN heavy INTEGER NOT NULL DEFAULT 0")
+        # Anything still running or queued belongs to a process that no longer exists.
+        db.execute("UPDATE background_tasks SET status='failed', finished=?, "
+                   "message='Interrupted by a service restart.', flashes=NULL WHERE status IN ('running','queued')",
+                   (time.time(),))
+        db.execute("DELETE FROM background_tasks WHERE finished IS NOT NULL AND finished < ?",
+                   (time.time() - 86400,))
+        db.commit()
+
+
+def bg_in_task():
+    return getattr(_BG_LOCAL, "task_id", None) is not None
+
+
+def bg_progress(pct=None, step=None):
+    """Report progress from inside a task. pct=None keeps the bar
+    'working' (animated) when the real duration is unknown. No-op when
+    called outside a task, so it is safe to leave in shared functions."""
+    tid = getattr(_BG_LOCAL, "task_id", None)
+    if not tid:
+        return
+    try:
+        value = None if pct is None else max(0, min(99, int(pct)))
+        with _bg_db() as db:
+            db.execute("UPDATE background_tasks SET progress=?, step=COALESCE(?, step) WHERE id=?",
+                       (value, step, tid))
+            db.commit()
+    except Exception:
+        pass
+
+
+def bg_note_result(result):
+    """Called from log_action(): a task whose handler logged a failure or
+    warning finishes as failed / completed-with-warnings even though the
+    handler itself swallowed the exception and flashed a message."""
+    if not bg_in_task():
+        return
+    current = getattr(_BG_LOCAL, "worst", None)
+    if result == "failed":
+        _BG_LOCAL.worst = "failed"
+    elif result == "warning" and current != "failed":
+        _BG_LOCAL.worst = "warning"
+
+
+
+def _bg_resources():
+    """Live free memory and the tightest free-disk reading across the
+    platform folder and the root filesystem."""
+    vm = psutil.virtual_memory()
+    free_mb, used_pct = None, 0
+    for p in (str(BASE), "/"):
+        try:
+            du = shutil.disk_usage(p)
+        except Exception:
+            continue
+        f = du.free // (1024 * 1024)
+        free_mb = f if free_mb is None else min(free_mb, f)
+        used_pct = max(used_pct, round(du.used * 100 / du.total) if du.total else 0)
+    return dict(avail_mb=vm.available // (1024 * 1024), total_mb=vm.total // (1024 * 1024),
+                disk_free_mb=free_mb if free_mb is not None else 10 ** 9, disk_used_pct=used_pct)
+
+
+def _bg_gb(mb):
+    return f"{mb / 1024:.1f} GB"
+
+
+def _bg_check(mem_mb, disk_mb):
+    """('ok'|'wait'|'fail', message). Disk problems fail at once (waiting
+    won't free disk); memory problems are worth waiting out because other
+    tasks finishing frees it."""
+    r = _bg_resources()
+    if r["disk_used_pct"] >= BG_MAX_DISK_USED_PCT:
+        return "fail", (f"the disk is {r['disk_used_pct']}% full (limit {BG_MAX_DISK_USED_PCT}%). Free some space first - "
+                        "starting this now could fill the disk and take live sites down.")
+    if disk_mb and r["disk_free_mb"] < disk_mb + BG_DISK_RESERVE_MB:
+        return "fail", (f"only {_bg_gb(r['disk_free_mb'])} of disk is free; this needs about {_bg_gb(disk_mb)} plus "
+                        f"{_bg_gb(BG_DISK_RESERVE_MB)} kept in reserve for live sites.")
+    if mem_mb and r["avail_mb"] < mem_mb + BG_MEM_RESERVE_MB:
+        return "wait", (f"only {_bg_gb(r['avail_mb'])} of memory is free; this needs about {_bg_gb(mem_mb)} plus "
+                        f"{_bg_gb(BG_MEM_RESERVE_MB)} kept in reserve for live sites.")
+    return "ok", ""
+
+
+def _bg_site_type(site):
+    try:
+        return (site_metadata(SITES / site) or {}).get("type", "wordpress")
+    except Exception:
+        return "wordpress"
+
+
+def _bg_last_backup_mb(site):
+    """Best estimate of a new backup's size: the newest existing one."""
+    try:
+        newest = max(((p.stat().st_mtime, p.stat().st_size) for p in (backup_root() / site).glob("*.tar.gz")), default=None)
+        return int((newest[1] * 1.15) // (1024 * 1024)) + 1 if newest else 1024
+    except Exception:
+        return 1024
+
+
+def _bg_cost(fn_name, kwargs):
+    """(heavy, mem_mb, disk_mb) for a route. Heavy = pulls images, builds,
+    restores or copies large data: these are limited to BG_MAX_HEAVY at a
+    time and only start when memory and disk allow."""
+    if fn_name == "create":
+        t = request.form.get("site_type", "wordpress")
+        return True, {"payload": 3072, "html_php": 512}.get(t, 1024), {"payload": 2048}.get(t, 1024)
+    if fn_name in ("migrate_site_route", "migration_rollback_route", "staging_clone"):
+        return True, 1024, 2048
+    if fn_name == "restore_specific_backup":
+        return True, (3072 if _bg_site_type(kwargs.get("site")) == "payload" else 1024), 2048
+    if fn_name == "action":
+        a, site = kwargs.get("action"), kwargs.get("site")
+        if a == "restore-latest":
+            return True, (3072 if _bg_site_type(site) == "payload" else 1024), 2048
+        if a == "payload-rebuild":
+            return True, 3072, 1024
+        if a == "update":
+            return True, 512, 1024
+        if a == "backup":
+            return True, 512, _bg_last_backup_mb(site)
+    return False, 0, 0
+
+
+def bg_require_disk(path, need_mb, reserve_mb=None, label="do this"):
+    """Raise if writing need_mb to path's filesystem would eat into the
+    free-space reserve - used by backups (including the nightly job, which
+    is not a task) so a backup can never fill a disk to 100%."""
+    reserve = BG_BACKUP_DISK_RESERVE_MB if reserve_mb is None else reserve_mb
+    try:
+        free_mb = shutil.disk_usage(str(path)).free // (1024 * 1024)
+    except Exception:
+        return
+    if free_mb < need_mb + reserve:
+        raise RuntimeError(f"Not enough free disk space to {label} safely: {_bg_gb(free_mb)} free, about "
+                           f"{_bg_gb(need_mb)} needed plus {_bg_gb(reserve)} kept in reserve so live sites keep running.")
+
+
+def _bg_set_step(task_id, step, pct=None):
+    try:
+        with _bg_db() as db:
+            db.execute("UPDATE background_tasks SET step=?, progress=? WHERE id=?", (step, pct, task_id))
+            db.commit()
+    except Exception:
+        pass
+
+
+def _bg_queue_text(ahead):
+    return f"Queued - waiting for a free slot ({ahead} task{'s' if ahead != 1 else ''} ahead)"
+
+
+def _bg_refresh_positions():
+    ids = [item[0] for item in list(_BG_QUEUE.queue)]
+    try:
+        with _bg_db() as db:
+            running = db.execute("SELECT COUNT(*) FROM background_tasks WHERE heavy=1 AND status='running'").fetchone()[0]
+            for pos, tid in enumerate(ids):
+                db.execute("UPDATE background_tasks SET step=? WHERE id=? AND status='queued'",
+                           (_bg_queue_text(running + pos), tid))
+            db.commit()
+    except Exception:
+        pass
+
+
+def _bg_run_heavy(task_id, title, snap, fn, args, kwargs, mem_mb, disk_mb):
+    with _bg_db() as db:
+        db.execute("UPDATE background_tasks SET status='running', started=?, progress=NULL, "
+                   "step='Checking free memory and disk' WHERE id=? AND status='queued'", (time.time(), task_id))
+        db.commit()
+    _bg_refresh_positions()
+    deadline = time.time() + BG_ADMISSION_WAIT_SECONDS
+    while True:
+        verdict, why = _bg_check(mem_mb, disk_mb)
+        if verdict == "ok":
+            break
+        if verdict == "fail" or time.time() >= deadline:
+            _bg_finish(task_id, "failed", [["message", f"{title} was not started: {why} Try again when other work has finished."]])
+            return
+        _bg_set_step(task_id, f"Waiting for memory: {why}")
+        time.sleep(BG_ADMISSION_POLL_SECONDS)
+    _bg_worker(task_id, title, snap, fn, args, kwargs)
+
+
+def _bg_heavy_loop():
+    while True:
+        item = _BG_QUEUE.get()
+        try:
+            _bg_run_heavy(*item)
+        except Exception:
+            try:
+                _bg_finish(item[0], "failed", [["message", f"{item[1]} failed unexpectedly."]])
+            except Exception:
+                pass
+        finally:
+            _BG_QUEUE.task_done()
+
+
+def _bg_ensure_pool():
+    with _BG_POOL_LOCK:
+        while len(_BG_POOL) < BG_MAX_HEAVY:
+            t = threading.Thread(target=_bg_heavy_loop, daemon=True, name=f"bg-heavy-{len(_BG_POOL)}")
+            t.start()
+            _BG_POOL.append(t)
+
+
+def _bg_snapshot():
+    return dict(
+        path=request.path,
+        host_url=request.host_url,
+        form=request.form.to_dict(flat=False),
+        referrer=request.referrer or "",
+        ip=request.remote_addr or "-",
+        ua=request.headers.get("User-Agent", ""),
+        session={k: session[k] for k in list(session.keys()) if k != "_flashes"},
+    )
+
+
+def _bg_shorten(text, limit=400):
+    """Keep both ends of a long error: the start says what failed, the
+    end usually carries the tool's actual detail (e.g. npm's last lines)."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:150].rstrip() + " ... " + text[-(limit - 155):].lstrip()
+
+
+def _bg_finish(task_id, status, flashes):
+    visible = [m for c, m in flashes if c not in BG_SECRET_FLASH_CATEGORIES]
+    message = " ".join(visible[:2])[:600]
+    reveal = 1 if any(c in BG_SECRET_FLASH_CATEGORIES for c, _ in flashes) else 0
+    with _bg_db() as db:
+        db.execute("UPDATE background_tasks SET status=?, progress=?, finished=?, flashes=?, message=?, reveal=? WHERE id=?",
+                   (status, 100 if status != "failed" else None, time.time(), json.dumps(flashes), message, reveal, task_id))
+        db.commit()
+
+
+def _bg_worker(task_id, title, snap, fn, args, kwargs):
+    _BG_LOCAL.task_id = task_id
+    _BG_LOCAL.worst = None
+    status, flashes = "success", []
+    try:
+        with APP.test_request_context(
+                snap["path"], method="POST", base_url=snap["host_url"], data=snap["form"],
+                headers={"Referer": snap["referrer"], "User-Agent": snap["ua"]},
+                environ_base={"REMOTE_ADDR": snap["ip"]}):
+            for k, v in snap["session"].items():
+                session[k] = v
+            try:
+                fn(*args, **kwargs)
+            finally:
+                flashes = [[c, m] for c, m in (session.get("_flashes") or [])]
+        worst = getattr(_BG_LOCAL, "worst", None)
+        if worst:
+            status = worst
+    except Exception as exc:
+        status = "failed"
+        flashes.append(["message", f"{title} failed: {_bg_shorten(str(exc))}"])
+    finally:
+        try:
+            _bg_finish(task_id, status, flashes)
+        finally:
+            _BG_LOCAL.task_id = None
+            _BG_LOCAL.worst = None
+
+
+def bg_start(title, fn, args=(), kwargs=None, site=None, lock_key=None, heavy=False, mem_mb=0, disk_mb=0):
+    """Start fn(*args, **kwargs) as a background task for the current user.
+    Returns (task_id, already_running). With lock_key, a second request
+    for the same thing while one is still running is refused instead of
+    launching a duplicate."""
+    kwargs = kwargs or {}
+    owner = session.get("username", "system")
+    with _bg_db() as db:
+        _bg_purge(db)
+        if lock_key:
+            # A "running" row older than 3 hours is a wedged task, not a live one.
+            row = db.execute("SELECT id FROM background_tasks WHERE lock_key=? AND status IN ('running','queued') AND started>?",
+                             (lock_key, time.time() - 10800)).fetchone()
+            if row:
+                return row[0], True
+        task_id = uuid.uuid4().hex[:12]
+        running_heavy = db.execute("SELECT COUNT(*) FROM background_tasks WHERE heavy=1 AND status='running'").fetchone()[0]
+        db.execute("INSERT INTO background_tasks(id,owner,title,site,lock_key,heavy,status,progress,step,started) "
+                   "VALUES(?,?,?,?,?,?,?,NULL,?,?)",
+                   (task_id, owner, title[:200], site, lock_key, 1 if heavy else 0,
+                    "queued" if heavy else "running",
+                    _bg_queue_text(running_heavy + _BG_QUEUE.qsize()) if heavy else "Starting", time.time()))
+        db.commit()
+    snap = _bg_snapshot()
+    if heavy:
+        _bg_ensure_pool()
+        _BG_QUEUE.put((task_id, title, snap, fn, args, kwargs, mem_mb, disk_mb))
+    else:
+        threading.Thread(target=_bg_worker, args=(task_id, title, snap, fn, args, kwargs), daemon=True).start()
+    return task_id, False
+
+
+def background_task(title, when=None, lock=None, after=None, heavy=None, mem_mb=None, disk_mb=None):
+    """Run a route handler as a background task instead of inline.
+    title / lock: str or callable(kwargs) -> str.  when: optional
+    callable(kwargs) -> bool selecting which calls run in the background
+    (e.g. only some actions of a multi-action route).  after: optional
+    callable(kwargs) -> url the browser is sent to (default: the page the
+    request came from) - e.g. not back to a site page that is being deleted.
+    heavy / mem_mb / disk_mb: normally looked up from the route name in
+    _bg_cost(); pass them to override. Heavy tasks queue (at most
+    BG_MAX_HEAVY run at once) and wait for free memory and disk. Authentication and
+    role checks stay on the real request - put this decorator INSIDE
+    @login_required / @operator_required."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if bg_in_task() or (when is not None and not when(kwargs)):
+                return fn(*args, **kwargs)
+            text = title(kwargs) if callable(title) else title
+            key = (lock(kwargs) if callable(lock) else lock) if lock else None
+            site = kwargs.get("site") or request.form.get("site") or None
+            if heavy is None:
+                is_heavy, mem, disk = _bg_cost(fn.__name__, kwargs)
+            else:
+                is_heavy, mem, disk = heavy, mem_mb or 0, disk_mb or 0
+            _, already = bg_start(text, fn, args, kwargs, site=site, lock_key=key,
+                                  heavy=is_heavy, mem_mb=mem, disk_mb=disk)
+            if already:
+                flash(f"{text} is already running - watch its progress at the bottom right.")
+            target = after(kwargs) if after else None
+            return redirect(target or request.referrer or url_for("index"))
+        return wrapper
+    return decorator
+
+
+BG_ACTION_TITLES = {
+    "start": "Starting {site}",
+    "stop": "Stopping {site}",
+    "restart": "Restarting {site}",
+    "update": "Updating {site}",
+    "backup": "Backing up {site}",
+    "restore-latest": "Restoring {site} from its latest backup",
+    "delete": "Deleting {site}",
+    "provision-ssl": "Setting up HTTPS for {site}",
+    "payload-rebuild": "Rebuilding {site}",
+    "install-login-reporter": "Installing login reporting on {site}",
+}
+
+
+@APP.get("/api/tasks")
+def api_tasks():
+    if not session.get("authenticated"):
+        return jsonify(error="not signed in"), 401
+    owner = session.get("username", "")
+    now = time.time()
+    tasks = []
+    with _bg_db() as db:
+        _bg_purge(db)
+        rows = db.execute(
+            "SELECT id,title,site,status,progress,step,started,finished,flashes,message,reveal,delivered "
+            "FROM background_tasks WHERE owner=? AND (status IN ('running','queued') OR (finished>? AND delivered=0)) "
+            "ORDER BY started", (owner, now - BG_RESULT_WINDOW_SECONDS)).fetchall()
+        for (tid, title, site, status, progress, step, started, finished, flashes, message, reveal, delivered) in rows:
+            if status not in ("running", "queued") and not delivered:
+                # Hand the handler's messages (and any one-time secret) to this
+                # user's own session, then wipe them from the task store.
+                for cat, msg in json.loads(flashes or "[]"):
+                    flash(msg, cat)
+                db.execute("UPDATE background_tasks SET delivered=1, flashes=NULL WHERE id=?", (tid,))
+            tasks.append(dict(id=tid, title=title, site=site, status=status, progress=progress, step=step,
+                              elapsed=int((finished or now) - started), message=message or "", reveal=bool(reveal)))
+        db.commit()
+    return jsonify(tasks=tasks)
+
+
+BG_WIDGET_HTML = """
+<style>
+#bg-task-widget{position:fixed;right:16px;bottom:16px;z-index:99999;display:flex;flex-direction:column;gap:10px;width:340px;max-width:calc(100vw - 32px);font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+#bg-task-widget .bgt{background:#0f1b2d;color:#e7eef8;border:1px solid #263850;border-left:4px solid #2563eb;border-radius:10px;padding:12px 14px;box-shadow:0 8px 28px rgba(0,0,0,.45);font-size:13px}
+#bg-task-widget .bgt.q{border-left-color:#64748b}#bg-task-widget .bgt.ok{border-left-color:#059669}#bg-task-widget .bgt.warn{border-left-color:#d97706}#bg-task-widget .bgt.bad{border-left-color:#dc2626}
+#bg-task-widget .bgt-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+#bg-task-widget .bgt-title{font-weight:700;line-height:1.3}
+#bg-task-widget .bgt-time{color:#91a3bb;font-variant-numeric:tabular-nums;white-space:nowrap}
+#bg-task-widget .bgt-step{color:#a9b8cc;margin-top:4px;line-height:1.35;word-break:break-word}
+#bg-task-widget .bgt-bar{height:7px;background:#1b2b42;border-radius:99px;overflow:hidden;margin-top:9px}
+#bg-task-widget .bgt-fill{height:100%;background:#2563eb;border-radius:99px;transition:width .6s ease}
+#bg-task-widget .bgt-fill.q{background:#475569}
+#bg-task-widget .bgt-fill.ind{width:100%!important;background:repeating-linear-gradient(45deg,#2563eb 0,#2563eb 10px,#3b82f6 10px,#3b82f6 20px);background-size:28px 28px;animation:bgstripe .9s linear infinite}
+@keyframes bgstripe{from{background-position:0 0}to{background-position:28px 0}}
+#bg-task-widget .bgt-actions{display:flex;gap:8px;margin-top:10px}
+#bg-task-widget button{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:6px 11px;font-size:12px;font-weight:700;cursor:pointer}
+#bg-task-widget button.sec{background:#334155}
+</style>
+<div id="bg-task-widget" aria-live="polite"></div>
+<script>
+(function(){
+  var box=document.getElementById('bg-task-widget'); if(!box) return;
+  var cards={}, timer=null, ticker=null, reloadTimer=null;
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function fmt(sec){sec=Math.max(0,Math.floor(sec));var m=Math.floor(sec/60),s=sec%60;return m+':'+(s<10?'0':'')+s;}
+  function render(c){
+    var t=c.t, queued=(t.status==='queued'), run=(t.status==='running'||queued), cls=queued?'q':(run?'':(t.status==='success'?'ok':(t.status==='warning'?'warn':'bad')));
+    var label=run?esc(t.step||'Working'):(t.status==='success'?'Completed':(t.status==='warning'?'Completed with warnings':'Failed'));
+    var body='<div class="bgt-top"><div class="bgt-title">'+(run?'':(t.status==='success'?'&#10003; ':(t.status==='warning'?'&#9888; ':'&#10007; ')))+esc(t.title)+'</div><div class="bgt-time">'+fmt(c.elapsed())+'</div></div>';
+    if(run){
+      var ind=(t.progress===null||t.progress===undefined);
+      body+='<div class="bgt-step">'+label+((ind||queued)?'':' &middot; '+t.progress+'%')+'</div><div class="bgt-bar"><div class="bgt-fill'+(queued?' q':(ind?' ind':''))+'" style="width:'+((ind||queued)?100:t.progress)+'%"></div></div>';
+    }else{
+      var msg='<b>'+label+'</b>'+(t.message?' &mdash; '+esc(t.message):'');
+      if(t.reveal) msg+=' <b>Reload to see your one-time admin password.</b>';
+      body+='<div class="bgt-step">'+msg+'</div><div class="bgt-actions"><button type="button" data-a="reload">Reload page</button><button type="button" class="sec" data-a="close">Dismiss</button></div>';
+    }
+    c.el.className='bgt '+cls; c.el.innerHTML=body;
+  }
+  box.addEventListener('click',function(e){
+    var a=e.target&&e.target.getAttribute&&e.target.getAttribute('data-a'); if(!a) return;
+    if(a==='reload'){location.reload();return;}
+    var el=e.target.closest('.bgt'); if(el){for(var id in cards){if(cards[id].el===el){el.remove();delete cards[id];}}}
+  });
+  function canAutoReload(){
+    var p=location.pathname, ae=document.activeElement;
+    if(ae&&/^(input|textarea|select)$/i.test(ae.tagName)) return false;
+    return p==='/'||p==='/sites'||p.indexOf('/site/')===0||p==='/alerts';
+  }
+  function isActive(t){return t.status==='running'||t.status==='queued';}
+  function anyRunning(){for(var id in cards){if(isActive(cards[id].t))return true;}return false;}
+  function tick(){
+    var any=false;
+    for(var id in cards){var c=cards[id]; if(isActive(c.t)){any=true;var tm=c.el.querySelector('.bgt-time'); if(tm)tm.textContent=fmt(c.elapsed());}}
+    if(!any&&ticker){clearInterval(ticker);ticker=null;}
+  }
+  function schedule(){
+    if(anyRunning()){ if(!timer) timer=setTimeout(function(){timer=null;poll();},1500);
+      if(!ticker) ticker=setInterval(tick,1000); }
+  }
+  function apply(list){
+    var seen={}, justDone=[];
+    list.forEach(function(t){
+      seen[t.id]=1; var c=cards[t.id], wasRunning=c&&isActive(c.t);
+      if(!c){ var el=document.createElement('div'); box.appendChild(el); var base=Date.now()-t.elapsed*1000;
+        c=cards[t.id]={el:el,t:t,base:base,elapsed:function(){return isActive(this.t)?(Date.now()-this.base)/1000:this.t.elapsed;}}; }
+      else { if(c.t.status!==t.status){c.base=Date.now()-t.elapsed*1000;} c.t=t; }
+      if(wasRunning&&!isActive(t)) justDone.push(t);
+      render(c);
+    });
+    for(var id in cards){ if(!seen[id]&&isActive(cards[id].t)){ cards[id].t={id:id,title:cards[id].t.title,status:'success',progress:100,step:'',elapsed:cards[id].elapsed(),message:'Finished.',reveal:false}; render(cards[id]); } }
+    justDone.forEach(function(t){
+      if(t.status==='success'&&!t.reveal&&canAutoReload()){ clearTimeout(reloadTimer); reloadTimer=setTimeout(function(){ if(canAutoReload()) location.reload(); },1800); }
+    });
+  }
+  function poll(){
+    fetch('/api/tasks',{credentials:'same-origin',headers:{'Accept':'application/json'}})
+      .then(function(r){ if(!r.ok||(r.headers.get('content-type')||'').indexOf('json')<0) throw 0; return r.json(); })
+      .then(function(d){ apply(d.tasks||[]); schedule(); })
+      .catch(function(){});
+  }
+  poll();
+})();
+</script>
+"""
+
+
+@APP.after_request
+def bg_inject_task_widget(resp):
+    try:
+        if (resp.status_code == 200 and resp.mimetype == "text/html" and not resp.direct_passthrough
+                and session.get("authenticated") and not request.path.startswith("/api/")):
+            body = resp.get_data(as_text=True)
+            if "</body>" in body and 'id="bg-task-widget"' not in body:
+                resp.set_data(body.replace("</body>", BG_WIDGET_HTML + "</body>", 1))
+    except Exception:
+        pass
+    return resp
+
+
 @APP.before_request
 def mandatory_account_security_gate():
 
@@ -1058,6 +1603,7 @@ def account_theme_save():
     return redirect(request.referrer or url_for("index"))
 
 def log_action(action, target="-", result="success", detail=""):
+    bg_note_result(result)
     username = session.get("username", "system") if request else "system"
     ip = client_ip() if request else "-"
     with sqlite3.connect(PLATFORM_DB) as db:
@@ -2591,9 +3137,10 @@ def scan_site_security(site):
 
 def security_scan_all():
     results = {}
-    for d in sorted([p for p in SITES.iterdir() if p.is_dir()]) if SITES.exists() else []:
-        if not (d / "site.json").exists():
-            continue
+    site_dirs = [d for d in (sorted([p for p in SITES.iterdir() if p.is_dir()]) if SITES.exists() else [])
+                 if (d / "site.json").exists()]
+    for i, d in enumerate(site_dirs):
+        bg_progress(int(i * 100 / max(1, len(site_dirs))), f"Scanning {d.name} ({i + 1} of {len(site_dirs)})")
         try:
             results[d.name] = scan_site_security(d.name)
         except Exception as exc:
@@ -3212,8 +3759,13 @@ def scheduled_backup_all():
                             continue
                     backup_site(d.name)
                     enforce_retention(d.name)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Previously swallowed silently; a nightly backup that fails (e.g. disk too full) must be visible.
+                    try:
+                        log_action("scheduled_backup", d.name, "failed", str(exc)[:300])
+                        send_alert_email(f"Scheduled backup failed: {d.name}", str(exc)[:1500])
+                    except Exception:
+                        pass
 
 def run(cmd, cwd=None, timeout=600, check=True):
     p = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, timeout=timeout)
@@ -3385,13 +3937,53 @@ def payload_compose_text(site):
             .replace("__DB_URL__", PAYLOAD_DB_URL))
 
 
+def payload_build_limits():
+    """Memory (MB) and CPU cap for the throwaway build container. A Next.js
+    build can use several GB; uncapped it could push the host into
+    out-of-memory and get live sites' containers killed. Capped, a build that
+    runs out only kills the build. Default: 30% of host RAM, between 2 and
+    4 GB (override: WP_PAYLOAD_BUILD_MEMORY_MB / WP_PAYLOAD_BUILD_CPUS)."""
+    configured = _bg_env_int("WP_PAYLOAD_BUILD_MEMORY_MB", 0)
+    if configured > 0:
+        mem_mb = max(1024, configured)
+    else:
+        try:
+            total_mb = psutil.virtual_memory().total // (1024 * 1024)
+        except Exception:
+            total_mb = 8192
+        mem_mb = int(max(2048, min(4096, total_mb * 0.30)))
+    cpus = max(1, min(_bg_env_int("WP_PAYLOAD_BUILD_CPUS", 2), os.cpu_count() or 2))
+    return mem_mb, cpus
+
+
+def _payload_write_limits_override(site):
+    mem_mb, cpus = payload_build_limits()
+    (SITES / site / "compose.build-limits.yml").write_text(
+        "services:\n  builder:\n"
+        f"    mem_limit: {mem_mb}m\n    memswap_limit: {mem_mb}m\n    cpus: {cpus}\n")
+    return mem_mb
+
+
 def payload_run_builder(site, script, timeout):
     """Runs a shell script inside the throwaway builder container (same
-    image, volumes, env and networks as the site, but no memory cap -
-    a Next.js production build needs several GB)."""
-    run(["docker", "compose", "--profile", "build", "run", "--rm", "-T",
-         "builder", "sh", "-lc", script],
+    image, volumes, env and networks as the site) under the memory/CPU cap
+    from payload_build_limits(), applied through an override file so existing
+    Payload sites get it too."""
+    _payload_write_limits_override(site)
+    run(["docker", "compose", "-f", "compose.yml", "-f", "compose.build-limits.yml",
+         "--profile", "build", "run", "--rm", "-T", "builder", "sh", "-lc", script],
         cwd=SITES / site, timeout=timeout)
+
+
+def _payload_explain_failure(exc):
+    text = str(exc)
+    low = text.lower()
+    if "killed" in low or "exit code 137" in low or "heap out of memory" in low or "enomem" in low:
+        mem_mb, _ = payload_build_limits()
+        return (f"The build ran out of memory (it is capped at {_bg_gb(mem_mb)} so a build can never take memory "
+                "from live sites). Reduce the project's build size, or raise WP_PAYLOAD_BUILD_MEMORY_MB if this "
+                "server has spare RAM. Detail: " + text)
+    return text
 
 
 def payload_wait_db_healthy(site, timeout=180):
@@ -3449,15 +4041,24 @@ def _payload_deploy_worker(site, first_run=False, domain="", auto_proxy=True,
     site_dir = SITES / site
     try:
         if first_run:
+            bg_progress(5, "Downloading container images")
             run(["docker", "compose", "pull"], cwd=site_dir, timeout=1800)
+            bg_progress(15, "Creating the Payload project")
             payload_run_builder(site, PAYLOAD_SCAFFOLD_SH, 1200)
         else:
+            bg_progress(5, "Stopping the site")
             run(["docker", "compose", "stop", "app"], cwd=site_dir, timeout=120, check=False)
+        bg_progress(None, "Installing dependencies and building - this takes several minutes")
         payload_run_builder(site, PAYLOAD_BUILD_SH, 3000)
+        bg_progress(88, "Starting the app")
         run(["docker", "compose", "up", "-d", "app"], cwd=site_dir, timeout=300)
         _payload_update_meta(site, build_status="ready", build_finished=time.time(), build_error=None)
     except Exception as exc:
-        _payload_update_meta(site, build_status="failed", build_error=str(exc)[-1500:])
+        _explained = _payload_explain_failure(exc)
+        _payload_update_meta(site, build_status="failed", build_error=_explained[-1500:])
+        bg_note_result("failed")
+        if bg_in_task():
+            flash(f"Payload build failed: {_bg_shorten(_explained)}")
         try:
             send_alert_email(
                 f"Payload build failed: {site}",
@@ -3470,8 +4071,10 @@ def _payload_deploy_worker(site, first_run=False, domain="", auto_proxy=True,
     if not first_run:
         return
 
+    bg_progress(91, "Waiting for the app to come up")
     ready = payload_wait_ready(site, 300)
 
+    bg_progress(94, "Setting up HTTPS")
     if auto_proxy:
         try:
             provisioned = provision_proxy_ssl(site, domain, forward_host=f"{site}-app",
@@ -3480,6 +4083,7 @@ def _payload_deploy_worker(site, first_run=False, domain="", auto_proxy=True,
         except Exception as exc:
             _payload_update_meta(site, proxy_status="failed", proxy_error=str(exc))
 
+    bg_progress(97, "Creating the first admin account")
     if admin_email:
         if ready:
             ok, detail = payload_create_first_user(site, admin_email, admin_password)
@@ -3488,6 +4092,7 @@ def _payload_deploy_worker(site, first_run=False, domain="", auto_proxy=True,
         _payload_update_meta(site, first_user="created" if ok else "failed",
                              first_user_detail=detail)
         if not ok:
+            bg_note_result("warning")
             try:
                 send_alert_email(
                     f"Payload first admin NOT created: {site}",
@@ -3499,6 +4104,15 @@ def _payload_deploy_worker(site, first_run=False, domain="", auto_proxy=True,
                 pass
 
 
+def _payload_launch(site, kwargs):
+    """Inside a background task, run the build inline so the task's progress bar
+    and result cover the whole build; otherwise fall back to a detached thread."""
+    if bg_in_task():
+        _payload_deploy_worker(site, **kwargs)
+    else:
+        threading.Thread(target=_payload_deploy_worker, args=(site,), kwargs=kwargs, daemon=True).start()
+
+
 def payload_start_rebuild(site, **worker_kwargs):
     """Starts a background build unless one is already in progress.
     Returns True if started, False if a recent build is still running."""
@@ -3507,8 +4121,7 @@ def payload_start_rebuild(site, **worker_kwargs):
             and time.time() - float(meta.get("build_started") or 0) < PAYLOAD_BUILD_STALE_SECONDS):
         return False
     _payload_update_meta(site, build_status="building", build_started=time.time(), build_error=None)
-    threading.Thread(target=_payload_deploy_worker, args=(site,),
-                     kwargs=worker_kwargs, daemon=True).start()
+    _payload_launch(site, worker_kwargs)
     return True
 
 
@@ -3559,11 +4172,8 @@ def create_payload_site(site, domain, memory, cpus, db_memory, admin_email, admi
         meta["dns_addresses"] = resolve_domain(domain)
     (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
 
-    threading.Thread(
-        target=_payload_deploy_worker, args=(site,),
-        kwargs=dict(first_run=True, domain=domain, auto_proxy=auto_proxy,
-                    admin_email=admin_email, admin_password=admin_password),
-        daemon=True).start()
+    _payload_launch(site, dict(first_run=True, domain=domain, auto_proxy=auto_proxy,
+                               admin_email=admin_email, admin_password=admin_password))
     return admin_password, meta
 
 
@@ -3868,9 +4478,12 @@ networks:
                 wp_login_secret=wp_login_secret)
     (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
 
+    bg_progress(8, "Downloading container images")
     run(["docker","compose","pull"], cwd=site_dir)
+    bg_progress(30, "Starting containers")
     run(["docker","compose","up","-d"], cwd=site_dir)
 
+    bg_progress(45, "Waiting for WordPress to initialise")
     for _ in range(90):
         try:
             c = docker_client.containers.get(f"{site}-wp")
@@ -3886,6 +4499,7 @@ networks:
     except Exception as exc:
         meta["login_reporter_warning"] = str(exc)
 
+    bg_progress(65, "Installing WordPress")
     cli_env = [
         "-e", f"WORDPRESS_DB_HOST={site}-db:3306",
         "-e", f"WORDPRESS_DB_NAME={db_name}",
@@ -3926,6 +4540,7 @@ networks:
         meta["proxy_https_warning"] = str(exc)
 
     if auto_proxy:
+        bg_progress(85, "Requesting the HTTPS certificate")
         meta["dns_addresses"] = resolve_domain(domain)
         try:
             provisioned = provision_proxy_ssl(site, domain)
@@ -4047,9 +4662,12 @@ def create_html_php_site(site, domain, memory, cpus, include_db, db_memory, auto
                 created=datetime.now().isoformat())
     (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
 
+    bg_progress(10, "Downloading container images")
     run(["docker","compose","pull"], cwd=site_dir)
+    bg_progress(35, "Starting containers")
     run(["docker","compose","up","-d"], cwd=site_dir)
 
+    bg_progress(55, "Waiting for the web server")
     for _ in range(60):
         try:
             c = docker_client.containers.get(f"{site}-web")
@@ -4080,6 +4698,7 @@ def create_html_php_site(site, domain, memory, cpus, include_db, db_memory, auto
             meta["phpmyadmin_error"] = str(exc)
 
     if auto_proxy:
+        bg_progress(85, "Requesting the HTTPS certificate")
         meta["dns_addresses"] = resolve_domain(domain)
         try:
             provisioned = provision_proxy_ssl(site, domain, forward_host=f"{site}-web")
@@ -4100,6 +4719,7 @@ def backup_site(site):
         raise ValueError("Unknown site.")
     dest = backup_root() / site
     dest.mkdir(parents=True, exist_ok=True)
+    bg_require_disk(dest, _bg_last_backup_mb(site), label="back up this site")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     meta = site_metadata(site_dir) or {}
@@ -4112,6 +4732,8 @@ def backup_site(site):
         if "=" in line:
             k,v=line.split("=",1); env[k]=v
 
+    if has_db:
+        bg_progress(15, "Dumping the database")
     if has_db and site_type == "payload":
         dbfile = dest / f"{stamp}-database.archive.gz"
         with dbfile.open("wb") as f:
@@ -4136,8 +4758,10 @@ def backup_site(site):
         run(["gzip","-f",str(dbfile)])
 
     archive = dest / f"{stamp}.tar.gz"
+    bg_progress(55, "Archiving the site files")
     tar_excludes = ["--exclude=app/node_modules", "--exclude=app/.next"] if site_type == "payload" else []
     run(["tar","-czf",str(archive)] + tar_excludes + ["-C",str(site_dir),web_dir_name,"compose.yml",".env","site.json"], timeout=1200)
+    bg_progress(90, "Copying to the NAS (if one is configured)")
     try:
         ok, detail = replicate_backup_set_to_nas(site, stamp)
         if load_backup_storage().get("server"):
@@ -4199,11 +4823,13 @@ def restore_backup(site, stamp=None):
         if archive is None:
             raise ValueError("No complete backup set found.")
 
+    bg_progress(10, "Stopping the site")
     run(["docker","compose","stop",service_name], cwd=site_dir)
     webdir = site_dir / web_dir_name
     safety = site_dir / f"{web_dir_name}.pre-restore-{int(time.time())}"
     if webdir.exists():
         webdir.rename(safety)
+    bg_progress(30, "Restoring the site files")
     run(["tar","-xzf",str(archive),"-C",str(site_dir)], timeout=1200)
 
     env = {}
@@ -4211,6 +4837,7 @@ def restore_backup(site, stamp=None):
         if "=" in line:
             k,v=line.split("=",1); env[k]=v
 
+    bg_progress(60, "Restoring the database")
     if expects_db and dbgz and site_type == "payload":
         run(["docker","compose","up","-d","db"], cwd=site_dir)
         if not payload_wait_db_healthy(site):
@@ -4223,6 +4850,7 @@ def restore_backup(site, stamp=None):
         time.sleep(8)
         cmd = f"gunzip -c {str(dbgz)} | docker exec -i {site}-db mariadb -u{env['DB_USER']} -p'{env['DB_PASSWORD']}' {env['DB_NAME']}"
         run(["bash","-lc",cmd], timeout=1200)
+    bg_progress(85, "Starting the site")
     if site_type == "payload":
         # node_modules/.next are not in the archive; rebuild in the background, then start the app
         payload_start_rebuild(site)
@@ -6340,12 +6968,16 @@ def migration_source_upload(site):
 
 @APP.post("/site/<site>/migrate")
 @operator_required
+@background_task(lambda kw: f"Migrating {kw['site']}", lock=lambda kw: "site:" + kw["site"],
+                 after=lambda kw: url_for("site_dashboard", site=kw["site"]) + "#migration")
 def migrate_site_route(site):
     if not SITE_RE.match(site) or not (SITES / site).exists():
         abort(404)
     try:
+        bg_progress(None, "Importing the site files and database (the longest step)")
         report = migration_engine.run_migration(site, request.form.get("old_url", "").strip())
         try:
+            bg_progress(75, "Running the security scan")
             findings = scan_site_security(site)
             report["security_findings"] = len(findings)
             report.setdefault("steps", []).append({"name":"Security scan","ok":True,"detail":f"{len(findings)} finding(s)"})
@@ -6354,6 +6986,7 @@ def migrate_site_route(site):
             report.setdefault("steps", []).append({"name":"Security scan","ok":False,"detail":str(sec_exc)})
             migration_engine.save_report(site, report)
         try:
+            bg_progress(90, "Checking plugins and themes for updates")
             vuln = check_outdated_components(site)
             outdated = (sum(1 for p in vuln.get("plugins", []) if p.get("outdated"))
                         + sum(1 for t in vuln.get("themes", []) if t.get("outdated"))
@@ -6375,10 +7008,13 @@ def migrate_site_route(site):
 
 @APP.post("/site/<site>/migration-rollback")
 @operator_required
+@background_task(lambda kw: f"Rolling back the migration of {kw['site']}", lock=lambda kw: "site:" + kw["site"],
+                 after=lambda kw: url_for("site_dashboard", site=kw["site"]) + "#migration")
 def migration_rollback_route(site):
     if not SITE_RE.match(site) or not (SITES / site).exists():
         abort(404)
     try:
+        bg_progress(None, "Restoring the pre-migration files and database")
         used = migration_engine.rollback_migration(site)
         log_action("site_migration_rollback", site, "success", str(used))
         flash(f"{site}: migration rollback completed.")
@@ -6649,6 +7285,7 @@ def alerts_dismiss(finding_id):
 
 @APP.post("/alerts/scan")
 @alerts_required
+@background_task("Running a security scan on all sites", lock="scan-all", after=lambda kw: url_for("alerts_page"))
 def alerts_scan_now():
     results = security_scan_all()
     total = sum(len(v) for v in results.values())
@@ -6658,11 +7295,15 @@ def alerts_scan_now():
 
 @APP.post("/alerts/baseline/<site>")
 @alerts_required
+@background_task(lambda kw: f"Updating the security baseline for {kw['site']}", lock=lambda kw: "baseline:" + kw["site"],
+                 after=lambda kw: url_for("alerts_page"))
 def alerts_set_baseline(site):
     if not SITE_RE.match(site) or not (SITES / site).exists():
         abort(404)
+    bg_progress(10, "Saving the trusted baseline")
     set_security_baseline(site, session.get("username","-"))
     # Run immediately; anything now trusted will clear if no longer considered suspicious.
+    bg_progress(40, "Re-scanning the site against the new baseline")
     scan_site_security(site)
     log_action("security_baseline_set", site, "success", "")
     flash(f"{site}: trusted security baseline updated.")
@@ -6881,10 +7522,12 @@ def site_mode(site,mode):
 
 @APP.post("/staging-clone/<site>")
 @alerts_required
+@background_task(lambda kw: f"Cloning {kw['site']} to staging", lock=lambda kw: "site:" + kw["site"])
 def staging_clone(site):
     if not SITE_RE.match(site) or not (SITES/site).exists():
         abort(404)
     try:
+        bg_progress(None, "Cloning the site files and database")
         staging_site, staging_domain = clone_site_to_staging(site)
         log_action("staging_clone",site,"success",f"{staging_site} / {staging_domain}")
         flash(
@@ -7059,6 +7702,7 @@ def backup_destination_nas_test():
 
 @APP.post("/admin/backup-destination/nas/mount")
 @admin_required
+@background_task("Mounting the NAS", lock="nas-mount", after=lambda kw: url_for("backup_destination_page"))
 def backup_destination_nas_mount():
     try:
         mount_nas()
@@ -7201,6 +7845,10 @@ def user_delete(username):
 
 @APP.post("/create")
 @operator_required
+@background_task(
+    lambda kw: "Creating " + {"html_php": "HTML/PHP", "payload": "Payload CMS"}.get(request.form.get("site_type", "wordpress"), "WordPress") + " site " + request.form.get("site", "").strip().lower(),
+    lock=lambda kw: "create:" + request.form.get("site", "").strip().lower(),
+    after=lambda kw: url_for("index"))
 def create():
     site_type = request.form.get("site_type", "wordpress")
     try:
@@ -7233,9 +7881,17 @@ def create():
                 request.form.get("auto_proxy","yes") == "yes",
             )
             log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
-            flash("Payload CMS site created and now building - the first build takes several minutes. "
-                  "Its status shows BUILDING until it finishes; the first admin account is created automatically "
-                  "once it is up. Payload sites run best with 2 GB of memory or more.")
+            _pl = site_metadata(SITES / request.form.get("site", "").lower().strip()) or {}
+            if _pl.get("build_status") == "failed":
+                log_action("site_create", request.form.get("site",""), "warning", "first build failed")
+                flash("Payload CMS site created, but its first build failed. Fix the cause (the error is shown in the site's More menu), then use Rebuild & Restart.")
+            elif _pl.get("build_status") == "ready":
+                flash("Payload CMS site created, built and running. " + ("The first admin account was registered automatically."
+                      if _pl.get("first_user") == "created" else "The first admin account could NOT be created automatically - register it yourself at /admin right away."))
+            else:
+                flash("Payload CMS site created and now building - the first build takes several minutes. "
+                      "Its status shows BUILDING until it finishes; the first admin account is created automatically "
+                      "once it is up. Payload sites run best with 2 GB of memory or more.")
             flash(password, "wp_password_reveal")
         else:
             password, meta = create_site(
@@ -7264,6 +7920,8 @@ def create():
 
 @APP.post("/action/<site>/restore/<stamp>")
 @operator_required
+@background_task(lambda kw: f"Restoring {kw['site']} from backup {kw['stamp']}", lock=lambda kw: "site:" + kw["site"],
+                 after=lambda kw: url_for("site_dashboard", site=kw["site"]) + "#backups")
 def restore_specific_backup(site, stamp):
     try:
         name = restore_backup(site, stamp=stamp)
@@ -7293,6 +7951,11 @@ def remove_oldest_backup_action(site):
 
 @APP.post("/action/<site>/<action>")
 @operator_required
+@background_task(
+    lambda kw: BG_ACTION_TITLES[kw["action"]].format(site=kw["site"]),
+    when=lambda kw: kw["action"] in BG_ACTION_TITLES,
+    lock=lambda kw: "site:" + kw["site"],
+    after=lambda kw: url_for("index") if kw["action"] in ("backup", "restore-latest", "provision-ssl", "delete") else None)
 def action(site, action):
     if not SITE_RE.match(site):
         flash("Invalid site.")
@@ -7310,16 +7973,25 @@ def action(site, action):
         elif action == "restart":
             run(["docker","compose","restart"], cwd=site_dir)
         elif action == "update":
+            bg_progress(15, "Downloading updated container images")
             run(["docker","compose","pull"], cwd=site_dir)
+            bg_progress(70, "Restarting the containers")
             run(["docker","compose","up","-d"], cwd=site_dir)
         elif action == "payload-rebuild":
             if (site_metadata(site_dir) or {}).get("type") != "payload":
                 flash(f"{site}: rebuild only applies to Payload sites.")
                 return redirect(request.referrer or url_for("site_dashboard", site=site))
             started = payload_start_rebuild(site)
-            log_action("site_payload_rebuild", site, "success" if started else "skipped", "")
-            flash(f"{site}: rebuild started - the site is briefly offline while it builds." if started
-                  else f"{site}: a build is already running.")
+            _bs = (site_metadata(site_dir) or {}).get("build_status")
+            log_action("site_payload_rebuild", site, "failed" if _bs == "failed" else ("success" if started else "skipped"), "")
+            if not started:
+                flash(f"{site}: a build is already running.")
+            elif _bs == "failed":
+                flash(f"{site}: rebuild failed - see the error in the site's More menu.")
+            elif _bs == "ready":
+                flash(f"{site}: rebuilt and restarted.")
+            else:
+                flash(f"{site}: rebuild started - the site is briefly offline while it builds.")
             return redirect(request.referrer or url_for("site_dashboard", site=site))
         elif action == "install-login-reporter":
             meta_path = site_dir / "site.json"
@@ -7440,6 +8112,7 @@ def action(site, action):
     return redirect(url_for("index"))
 
 init_auth()
+bg_init()
 start_firewall_expiry_worker()
 
 if os.environ.get("WP_SCHEDULER_STARTED") != "1":
