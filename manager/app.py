@@ -215,10 +215,14 @@ ALERTS_HTML = r"""
 <div class="field"><b>First Seen</b>{{ f.first_seen }}</div>
 </div>
 {% if f.evidence and f.evidence != '-' %}<p><b>Evidence:</b> {{ f.evidence }}</p>{% endif %}
-<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">{% if f.finding_type == 'backup_cleanup_suggested' %}<form method="post" action="/action/{{ f.site }}/remove-oldest-backup" onsubmit="return confirm('Remove the single oldest backup for {{ f.site }}? This cannot be undone.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Remove Oldest Backup</button></form>{% endif %}<form method="post" action="/alerts/dismiss/{{ f.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Dismiss for 24h</button></form></div>
+{% if f.finding_type == 'php_in_uploads' and php_previews.get(f.id) %}<div style="margin:10px 0"><b>File contents</b> <span class="muted">({{ php_previews[f.id].size }} bytes)</span><pre style="white-space:pre-wrap;word-break:break-all;background:#0b1727;border:1px solid #263850;border-radius:8px;padding:10px;color:#e7eef8;max-height:170px;overflow:auto;margin:6px 0;font-size:12px">{{ php_previews[f.id].text }}</pre><div style="color:{{ '#4ade80' if php_previews[f.id].can_ack else '#fbbf24' }};font-size:13px">{{ php_previews[f.id].verdict }}</div></div>{% endif %}
+<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">{% if f.finding_type == 'php_in_uploads' and php_previews.get(f.id) and php_previews[f.id].can_ack %}<form method="post" action="/alerts/acknowledge-file/{{ f.id }}" onsubmit="return confirm('Acknowledge this file and add it to the baseline for {{ f.site }}? Any file with exactly this content is then accepted, and it alerts again if its content ever changes.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#047857">Acknowledge &amp; add to baseline</button></form>{% endif %}{% if f.finding_type == 'backup_cleanup_suggested' %}<form method="post" action="/action/{{ f.site }}/remove-oldest-backup" onsubmit="return confirm('Remove the single oldest backup for {{ f.site }}? This cannot be undone.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Remove Oldest Backup</button></form>{% endif %}<form method="post" action="/alerts/dismiss/{{ f.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Dismiss for 24h</button></form></div>
 </section>
 {% endfor %}
 
+{% if acknowledged_php %}<h2>Acknowledged files (part of the baseline)</h2>
+<div class="card"><p class="muted" style="margin-top:0">These PHP placeholder files inside wp-content/uploads were reviewed and accepted. They are matched by exact content, so a file alerts again if its content ever changes. Remove an entry to have it flagged again at the next scan.</p>
+{% for a in acknowledged_php %}<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line)"><div style="min-width:0"><strong>{{ a.site }}</strong> <span class="muted">{{ a.path }}</span><div class="muted" style="font-size:12px">{{ a.size }} bytes &middot; acknowledged by {{ a.by }} on {{ a.at }} &middot; <code>{{ a.preview }}</code></div></div><form method="post" action="/alerts/acknowledged/{{ a.site }}/{{ a.sha256 }}/remove" onsubmit="return confirm('Remove this acknowledgement? The file will be flagged again at the next scan.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Remove</button></form></div>{% endfor %}</div>{% endif %}
 <h2>Site Operations & Details</h2>
 {% for s in sites %}{% set op=site_ops[s.site] %}
 <div class="card"><div class="head"><div><strong>{{ s.site }}</strong><div class="muted">{{ s.domain }} · {{ op.mode|upper }} · External {{ op.last_external_status or '-' }}</div></div></div>
@@ -3193,20 +3197,261 @@ def resolve_missing_findings(site, seen_keys):
                 db.execute("UPDATE security_findings SET active=0 WHERE id=?", (finding_id,))
         db.commit()
 
-def suspicious_php_in_uploads(root):
+# ---------------------------------------------------------------------------
+# Acknowledging PHP files in wp-content/uploads
+#
+# The uploads scanner flags EVERY .php file under uploads, and the baseline has
+# no concept of an approved one - so plugins that drop harmless placeholder
+# files ("Silence is golden" index.php) alert forever. Acknowledging a file adds
+# its exact content (SHA-256) to a per-site approved list: visible, revocable,
+# and it alerts again the moment the content changes. It is NOT a snooze.
+#
+# Safety: tiny PHP files are exactly what web shells look like, so size proves
+# nothing. Only PLACEHOLDERS can be acknowledged - files whose PHP contains no
+# executable code at all (comments, exit/die/return). Anything with real code
+# must be reviewed and removed over SFTP.
+# ---------------------------------------------------------------------------
+SECURITY_ACK_MAX_BYTES = 4096
+_ACK_PLACEHOLDER_RESIDUE = {"", "exit;", "die;", "return;", "exit();", "die();", "exit(0);", "die(0);"}
+_ACK_SUSPICIOUS = re.compile(
+    r"eval\s*\(|assert\s*\(|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|shell_exec|passthru|"
+    r"\bsystem\s*\(|\bexec\s*\(|popen|proc_open|pcntl_exec|create_function|call_user_func|preg_replace|"
+    r"\$_(?:GET|POST|REQUEST|COOKIE|FILES|SERVER|ENV)|\$\$|\binclude(?:_once)?\b|\brequire(?:_once)?\b|"
+    r"file_put_contents|file_get_contents|fwrite|fputs|fopen|curl_|move_uploaded_file|unlink|chmod|"
+    r"fsockopen|stream_socket|<\?=|`", re.I)
+
+
+def _ack_ensure():
+    with sqlite3.connect(PLATFORM_DB) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS security_acknowledged_php (
+                site TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                first_path TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                preview TEXT,
+                acknowledged_by TEXT,
+                acknowledged_at TEXT NOT NULL,
+                PRIMARY KEY (site, sha256)
+            )
+        """)
+        db.commit()
+
+
+_ACK_STRUCTURAL_TAGS = re.compile(r"</?(?:!doctype[^>]*|html|head|body)\s*>", re.I)
+_ACK_ACTIVE_TAGS = re.compile(r"<\s*(script|iframe|frame|form|a|img|object|embed|link|meta|style|svg|video|audio|input|base)\b", re.I)
+
+
+def classify_uploads_php(data):
+    """Describe a .php file found in uploads. can_ack is True only for harmless placeholders:
+    (a) PHP whose code is empty (comments, exit/die/return), or (b) a file with NO PHP tags whose markup is
+    empty (e.g. <html></html>). A file with no PHP tags runs nothing - but if it has real content it would
+    serve that content from your domain (phishing / spam pages), so it is not accepted."""
+    size = len(data)
+    text = data.decode("utf-8", "replace")
+    suspicious = sorted({m.group(0).strip().lower() for m in _ACK_SUSPICIOUS.finditer(text)})
+    if size > SECURITY_ACK_MAX_BYTES:
+        return dict(size=size, placeholder=False, suspicious=suspicious, can_ack=False,
+                    verdict=f"Too large to acknowledge here ({size} bytes; limit {SECURITY_ACK_MAX_BYTES}). Review it over SFTP and delete it if it isn't needed.")
+    has_php = "<?" in text or re.search(r"<script[^>]*language\s*=\s*[\"']?php", text, re.I) is not None
+    if not has_php:
+        markup = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+        markup = _ACK_STRUCTURAL_TAGS.sub("", markup)
+        residue = re.sub(r"\s+", "", markup).lower()
+        if residue in ("", "silenceisgolden", "silenceisgolden.") and not suspicious:
+            return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=True,
+                        verdict="Contains no PHP code at all - just empty HTML. The server sends it as-is, so nothing can run.")
+        if residue in ("", "silenceisgolden", "silenceisgolden."):
+            return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=False,
+                        verdict="Contains no PHP code, but it mentions " + ", ".join(suspicious[:6]) + ", so check it by hand over SFTP before trusting it.")
+        active = sorted({m.group(1).lower() for m in _ACK_ACTIVE_TAGS.finditer(text)})
+        what = ("it contains " + ", ".join("<" + a + ">" for a in active[:5])) if active else "it contains visible content"
+        return dict(size=size, placeholder=False, suspicious=suspicious, can_ack=False,
+                    verdict=f"Contains no PHP code, but it is not an empty placeholder ({what}). It would serve that content from your domain, "
+                            "which is how phishing and spam pages are planted. Review it over SFTP and delete it if it isn't needed.")
+    # PHP present: PHP ends a // or # comment at a newline, a lone carriage return, OR at "?>" - so a comment must
+    # never be allowed to swallow code that follows a "?>" or a bare "\r".
+    code = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    code = re.sub(r"(?://|#)(?:(?!\?>)[^\r\n])*", "", code)
+    code = re.sub(r"<\?php|<\?|\?>", "", code, flags=re.I)
+    residue = re.sub(r"\s+", "", code).lower()
+    placeholder = residue in _ACK_PLACEHOLDER_RESIDUE
+    if placeholder and not suspicious:
+        return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=True,
+                    verdict="Looks like a harmless placeholder: it contains no executable code.")
+    if placeholder:
+        return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=False,
+                    verdict="Looks like a placeholder, but it mentions " + ", ".join(suspicious[:6]) +
+                            " (even inside a comment), so check it by hand over SFTP before trusting it.")
+    note = (" It uses: " + ", ".join(suspicious[:6]) + ".") if suspicious else ""
+    return dict(size=size, placeholder=False, suspicious=suspicious, can_ack=False,
+                verdict="Contains executable PHP code, so it cannot be acknowledged here." + note +
+                        " Review it over SFTP and delete it if it isn't needed.")
+
+
+def uploads_php_file(site, rel):
+    """Resolve a finding's relative path to a real file, refusing anything that isn't a plain .php file inside uploads."""
+    if not SITE_RE.match(site or ""):
+        raise ValueError("unknown site")
+    root = (SITES / site / "wordpress").resolve()
+    uploads = (root / "wp-content" / "uploads").resolve()
+    if not str(rel).startswith("wp-content/uploads/") or not str(rel).lower().endswith(".php"):
+        raise ValueError("that is not a PHP file inside wp-content/uploads")
+    p = root / rel
+    if p.is_symlink():
+        raise ValueError("it is a symbolic link")
+    rp = p.resolve()
+    try:
+        rp.relative_to(uploads)
+    except ValueError:
+        raise ValueError("it resolves to a location outside wp-content/uploads")
+    if not rp.is_file():
+        raise ValueError("the file no longer exists")
+    return rp
+
+
+def acknowledged_php_hashes(site):
+    """({sha256: (first_path, when)}, {first_path: (sha256, when)}) for a site."""
+    _ack_ensure()
+    with sqlite3.connect(PLATFORM_DB) as db:
+        rows = db.execute("SELECT sha256,first_path,acknowledged_at FROM security_acknowledged_php WHERE site=?", (site,)).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}, {r[1]: (r[0], r[2]) for r in rows}
+
+
+def php_preview(site, rel):
+    try:
+        p = uploads_php_file(site, rel)
+        with open(p, "rb") as f:
+            data = f.read(SECURITY_ACK_MAX_BYTES + 1)
+        info = classify_uploads_php(data)
+        info["size"] = p.stat().st_size
+        info["text"] = data[:600].decode("utf-8", "replace") + (" ..." if len(data) > 600 else "")
+        return info
+    except Exception as exc:
+        return dict(size=0, text="", placeholder=False, suspicious=[], can_ack=False, verdict=f"Cannot read this file: {exc}.")
+
+
+def build_php_previews(findings):
+    out = {}
+    for f in [x for x in findings if x["finding_type"] == "php_in_uploads"][:40]:
+        out[f["id"]] = php_preview(f["site"], f["path"])
+    return out
+
+
+def _ack_close_matching_findings(site, sha):
+    """Resolve every open php_in_uploads finding on this site whose file has exactly this content."""
+    import hashlib
+    closed = 0
+    with sqlite3.connect(PLATFORM_DB) as db:
+        rows = db.execute("SELECT id,path FROM security_findings WHERE site=? AND active=1 AND finding_type='php_in_uploads'", (site,)).fetchall()
+        for fid, rel in rows:
+            try:
+                p = uploads_php_file(site, rel)
+                if p.stat().st_size <= SECURITY_ACK_MAX_BYTES and hashlib.sha256(p.read_bytes()).hexdigest() == sha:
+                    db.execute("UPDATE security_findings SET active=0 WHERE id=?", (fid,))
+                    closed += 1
+            except Exception:
+                continue
+        db.commit()
+    return closed
+
+
+def acknowledge_php_file(site, rel, username):
+    import hashlib
+    p = uploads_php_file(site, rel)
+    with open(p, "rb") as f:
+        data = f.read(SECURITY_ACK_MAX_BYTES + 1)
+    info = classify_uploads_php(data)
+    if not info["can_ack"]:
+        raise ValueError(info["verdict"])
+    sha = hashlib.sha256(data).hexdigest()
+    _ack_ensure()
+    with sqlite3.connect(PLATFORM_DB) as db:
+        db.execute("INSERT OR IGNORE INTO security_acknowledged_php(site,sha256,first_path,size,preview,acknowledged_by,acknowledged_at) VALUES(?,?,?,?,?,?,?)",
+                   (site, sha, rel, len(data), data[:300].decode("utf-8", "replace"), username, datetime.now(timezone.utc).isoformat()))
+        db.commit()
+    return sha, len(data), _ack_close_matching_findings(site, sha)
+
+
+def list_acknowledged_php():
+    _ack_ensure()
+    with sqlite3.connect(PLATFORM_DB) as db:
+        rows = db.execute("SELECT site,sha256,first_path,size,preview,acknowledged_by,acknowledged_at FROM security_acknowledged_php ORDER BY site, acknowledged_at DESC").fetchall()
+    return [dict(site=r[0], sha256=r[1], path=r[2], size=r[3], preview=(r[4] or "").strip()[:120], by=r[5] or "-", at=format_adelaide(r[6])) for r in rows]
+
+
+@APP.post("/alerts/acknowledge-file/<int:finding_id>")
+@alerts_required
+def alerts_acknowledge_file(finding_id):
+    with sqlite3.connect(PLATFORM_DB) as db:
+        row = db.execute("SELECT site,finding_type,path FROM security_findings WHERE id=? AND active=1", (finding_id,)).fetchone()
+    if not row or row[1] != "php_in_uploads":
+        flash("That alert can't be acknowledged (it is gone, or isn't a PHP-in-uploads alert).")
+        return redirect(url_for("alerts_page"))
+    site, _, rel = row
+    try:
+        sha, size, closed = acknowledge_php_file(site, rel, session.get("username", "-"))
+    except ValueError as exc:
+        log_action("security_ack_php", site, "failed", f"{rel}: {str(exc)[:200]}")
+        flash(f"{site}: not acknowledged - {exc}")
+        return redirect(url_for("alerts_page"))
+    log_action("security_ack_php", site, "success", f"{rel} sha256={sha[:16]} size={size}")
+    flash(f"{site}: acknowledged and added to the baseline - {rel}. "
+          f"{closed} matching alert(s) resolved. Any file with exactly this content is now accepted on this site; "
+          "if its content ever changes it will alert again.")
+    return redirect(url_for("alerts_page"))
+
+
+@APP.post("/alerts/acknowledged/<site>/<sha>/remove")
+@alerts_required
+def alerts_acknowledged_remove(site, sha):
+    if not SITE_RE.match(site) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        abort(404)
+    _ack_ensure()
+    with sqlite3.connect(PLATFORM_DB) as db:
+        cur = db.execute("DELETE FROM security_acknowledged_php WHERE site=? AND sha256=?", (site, sha))
+        db.commit()
+    if cur.rowcount:
+        log_action("security_ack_php_remove", site, "success", f"sha256={sha[:16]}")
+        flash(f"{site}: acknowledgement removed. That file will be flagged again at the next scan.")
+    else:
+        flash("That acknowledgement no longer exists.")
+    return redirect(url_for("alerts_page"))
+
+
+def suspicious_php_in_uploads(root, site=None):
     findings = []
     uploads = root / "wp-content" / "uploads"
     if not uploads.exists():
         return findings
+    by_hash, by_path = acknowledged_php_hashes(site) if site else ({}, {})
     for p in uploads.rglob("*.php"):
         try:
             rel = str(p.relative_to(root))
+            size = p.stat().st_size
+            if (by_hash or by_path) and size <= SECURITY_ACK_MAX_BYTES and not p.is_symlink():
+                import hashlib
+                sha = hashlib.sha256(p.read_bytes()).hexdigest()
+                if sha in by_hash:
+                    continue
+                if rel in by_path:
+                    findings.append(("CRITICAL", "php_in_uploads", rel,
+                                     "Acknowledged PHP file in uploads has CHANGED",
+                                     f"size={size}; its content differs from the version acknowledged on {by_path[rel][1][:10]}"))
+                    continue
+            elif by_path and rel in by_path:
+                findings.append(("CRITICAL", "php_in_uploads", rel,
+                                 "Acknowledged PHP file in uploads has CHANGED",
+                                 f"size={size}; it is no longer the small placeholder acknowledged on {by_path[rel][1][:10]}"))
+                continue
             findings.append(("CRITICAL", "php_in_uploads", rel,
                              "PHP file detected inside wp-content/uploads",
-                             f"size={p.stat().st_size}"))
+                             f"size={size}"))
         except Exception:
             pass
     return findings
+
+
 
 def suspicious_root_entries(root, baseline, page_slugs):
     findings = []
@@ -3316,7 +3561,7 @@ def scan_site_security(site):
     page_slugs = get_wp_page_slugs(site)
     findings = []
     findings.extend(suspicious_root_entries(root, baseline, page_slugs))
-    findings.extend(suspicious_php_in_uploads(root))
+    findings.extend(suspicious_php_in_uploads(root, site))
     findings.extend(changed_sensitive_files(root, baseline))
     findings.extend(new_admin_users(site, baseline))
     ok, detail = wordpress_core_checksum(site)
@@ -7805,9 +8050,12 @@ input{width:100%;box-sizing:border-box;margin-top:6px;padding:11px;background:va
 @APP.get("/alerts")
 @alerts_required
 def alerts_page():
+    findings = active_security_findings()
     return render_template_string(
         ALERTS_HTML,
-        findings=active_security_findings(),
+        findings=findings,
+        php_previews=build_php_previews(findings),
+        acknowledged_php=list_acknowledged_php(),
         sites=list_sites(),
         site_ops={s["site"]:get_site_ops(s["site"]) for s in list_sites()},
         current_user=session.get("username","-"),
