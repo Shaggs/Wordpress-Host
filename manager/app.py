@@ -456,7 +456,104 @@ SITE_HTML = r"""
 {% if migration_report.checks %}<h4>Validation</h4><table class="table"><tr><th>Check</th><th>Result</th><th>Detail</th></tr>{% for c in migration_report.checks %}<tr><td>{{ c.check }}</td><td class="{{ 'good' if c.ok else 'bad' }}">{{ 'PASS' if c.ok else 'FAIL' }}</td><td>{{ c.detail }}</td></tr>{% endfor %}</table>{% endif %}
 </div>{% endif %}
 </section>
-<section class="tabpane" id="tab-settings"><div class="card"><h3>Owner & Site Details</h3><form method="post" action="/site-ops/{{ site.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="fields"><input name="owner_name" value="{{ ops.owner_name }}" placeholder="Owner name"><input name="owner_email" value="{{ ops.owner_email }}" placeholder="Owner email"><input name="owner_phone" value="{{ ops.owner_phone }}" placeholder="Owner phone"><input name="external_url" value="{{ ops.external_url }}" placeholder="External monitor URL"></div><p><textarea name="notes" rows="5" placeholder="Site notes">{{ ops.notes }}</textarea></p>{% if current_role in ['admin','user'] %}<button class="btn" type="submit">Save Site Details</button>{% endif %}</form></div></section>
+<section class="tabpane" id="tab-settings"><div class="card" id="res-card" style="margin-bottom:16px"><h3>Resources</h3>
+<p class="muted" id="res-server" style="margin-top:0">Reading the server's capacity...</p>
+<form method="post" action="/site/{{ site.site }}/resources" id="res-form" onsubmit="return window.__resConfirm ? window.__resConfirm() : true">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<table class="table" id="res-table"></table>
+<p id="res-preview" style="margin:12px 0 6px"></p>
+<ul id="res-notes" style="margin:0 0 10px 18px;padding:0;font-size:13px"></ul>
+<p id="res-ack" style="display:none"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="ack" value="1" id="res-ackbox" style="width:auto"> I understand these limits add up to more than this server's memory</label></p>
+{% if current_role in ['admin','user'] %}<div style="display:flex;gap:8px"><button class="btn" id="res-apply" type="submit" disabled>No changes</button><button class="btn" id="res-reset" type="button" style="opacity:.8">Reset</button></div>{% endif %}
+<p class="muted" style="font-size:12px;margin:10px 0 0">Applying restarts the changed containers, so the site is briefly offline. The new limits are checked on the running containers, and the old ones are put back if anything goes wrong.</p>
+</form>
+<script>
+(function(){
+  var SITE="{{ site.site }}", CAN_EDIT={{ 'true' if current_role in ['admin','user'] else 'false' }};
+  var S=null, sel={};
+  var el=function(id){return document.getElementById(id);};
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function gb(mb){return (Math.round(mb/102.4)/10).toFixed(1)+' GB';}
+  function mem(mb){return mb>=1024?gb(mb):mb+' MB';}
+  function cpuTxt(c){return c+(c===1?' CPU':' CPUs');}
+  function liveText(s){
+    if(s.live_memory_mb===null||s.live_memory_mb===undefined) return 'not running';
+    var t='running now with '+(s.live_memory_mb?mem(s.live_memory_mb):'no memory limit');
+    if(s.can_cpu) t+=' / '+(s.live_cpus?cpuTxt(s.live_cpus):'no CPU limit');
+    if((s.live_memory_mb||0)!==(s.memory_mb||0)) t+=' - differs from the saved setting; applying will sync it';
+    return t;
+  }
+  function option(value,label,disabled,selected){var o=document.createElement('option'); o.value=value; o.textContent=label; if(disabled)o.disabled=true; if(selected)o.selected=true; return o;}
+  function build(){
+    var tbl=el('res-table'); tbl.innerHTML='<tr><th>Container</th><th>Memory</th><th>CPU</th></tr>'; sel={};
+    S.services.forEach(function(s){
+      var tr=document.createElement('tr'), td0=document.createElement('td'), td1=document.createElement('td'), td2=document.createElement('td');
+      td0.innerHTML='<b>'+esc(s.label)+'</b><div class="muted" style="font-size:11px">'+esc(liveText(s))+'</div>';
+      var m=document.createElement('select'); m.name=s.key+'_memory_mb'; m.disabled=!CAN_EDIT; m.style.cssText='background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:7px';
+      S.options.memory_mb.forEach(function(v){
+        var tooBig=(v>S.limits.max_single_mb && v>(s.memory_mb||0)), tooSmall=(v<s.min_mb);
+        m.appendChild(option(v, mem(v)+(tooBig?' (too large for this server)':(tooSmall?' (too small)':'')), tooBig||tooSmall, v===s.memory_mb));
+      });
+      m.addEventListener('change',calc); sel[m.name]=m; td1.appendChild(m);
+      if(s.can_cpu){
+        var c=document.createElement('select'); c.name=s.key+'_cpus'; c.disabled=!CAN_EDIT; c.style.cssText=m.style.cssText;
+        S.options.cpus.forEach(function(v){
+          var tooBig=(v>S.server.cpus && v>(s.cpus||0));
+          c.appendChild(option(v, cpuTxt(v)+(tooBig?' (server has '+S.server.cpus+')':''), tooBig, v===s.cpus));
+        });
+        c.addEventListener('change',calc); sel[c.name]=c; td2.appendChild(c);
+      } else { td2.innerHTML='<span class="muted">fixed</span>'; }
+      tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2); tbl.appendChild(tr);
+    });
+    var srv=S.server, line='Server: '+gb(srv.total_mb)+' memory &middot; '+cpuTxt(srv.cpus)+' &middot; swap: '+(srv.swap_mb?gb(srv.swap_mb):'none');
+    if(!srv.swap_mb) line+=' <span class="warn">(no swap: if memory runs out the system kills containers instead of slowing down)</span>';
+    el('res-server').innerHTML=line;
+    calc();
+  }
+  function values(){
+    var v={}; S.services.forEach(function(s){ v[s.key+'_memory_mb']=+sel[s.key+'_memory_mb'].value; if(s.can_cpu) v[s.key+'_cpus']=+sel[s.key+'_cpus'].value; }); return v;
+  }
+  function calc(){
+    var v=values(), errs=[], warns=[], before=S.server.committed_other_mb, after=before, changed=[], nowTxt=[];
+    S.services.forEach(function(s){
+      var cur=s.memory_mb||0, nw=v[s.key+'_memory_mb'], chg=(nw!==cur), short=s.label.split(' (')[0];
+      before+=cur; after+=nw;
+      if(nw<s.min_mb) errs.push(s.label+' needs at least '+s.min_mb+' MB to run reliably.');
+      if(nw>cur && nw>S.limits.max_single_mb) errs.push(s.label+': one container may use at most '+mem(S.limits.max_single_mb)+' on this server.');
+      var part=short.toLowerCase()+' '+mem(nw);
+      if(s.can_cpu){ var c=v[s.key+'_cpus']; part+=' / '+cpuTxt(c); if(c>S.server.cpus && c>(s.cpus||0)) errs.push(s.label+': this server only has '+S.server.cpus+' CPU(s).'); if(c!==s.cpus) chg=true; }
+      nowTxt.push(part); if(chg) changed.push(short.toLowerCase());
+    });
+    var needAck=false;
+    if(after>before){
+      if(after>S.limits.hard_commit_mb) errs.push('All memory limits together would be '+gb(after)+' on a '+gb(S.server.total_mb)+' server (over '+Math.round(S.limits.hard_commit_mb*100/S.server.total_mb)+'%). Lower another limit first.');
+      else if(after>S.limits.warn_commit_mb){ needAck=true; warns.push('All memory limits together would be '+gb(after)+' on a '+gb(S.server.total_mb)+' server. Allowed, but if several sites are busy at once the server can run out of memory.'); }
+    }
+    if(!errs.length && !warns.length && after>S.limits.warn_commit_mb) warns.push('Limits across this server already add up to more than its memory. Lowering one of them is the safer direction.');
+    if(S.busy) errs.push(S.busy);
+    var cls=errs.length?'bad':(warns.length?'warn':'good'), pct=Math.round(after*100/S.server.total_mb);
+    el('res-preview').innerHTML='<span class="'+cls+'"><b>After this change:</b> '+esc(nowTxt.join(', '))+'. All limits across this server add up to '+gb(after)+' ('+pct+'% of its '+gb(S.server.total_mb)+').</span>';
+    var notes=errs.map(function(t){return '<li class="bad">'+esc(t)+'</li>';}).concat(warns.map(function(t){return '<li class="warn">'+esc(t)+'</li>';}));
+    if(S.server.uncapped>0) notes.push('<li class="muted">'+S.server.uncapped+' other container'+(S.server.uncapped===1?' has':'s have')+' no memory limit set, so they are not counted in that total.</li>');
+    el('res-notes').innerHTML=notes.join('');
+    el('res-ack').style.display=(needAck&&!errs.length)?'block':'none';
+    var btn=el('res-apply');
+    if(btn){
+      var ok=!errs.length && changed.length && (!needAck || el('res-ackbox').checked);
+      btn.disabled=!ok; btn.textContent=changed.length?('Apply and restart: '+changed.join(' and ')):'No changes';
+    }
+    window.__resChanged=changed;
+  }
+  window.__resConfirm=function(){ return confirm('Apply the new limits? The '+(window.__resChanged||[]).join(' and ')+' will restart, so the site is briefly offline.'); };
+  var ack=el('res-ackbox'); if(ack) ack.addEventListener('change',calc);
+  var rst=el('res-reset'); if(rst) rst.addEventListener('click',function(){ build(); });
+  fetch('/api/site/'+encodeURIComponent(SITE)+'/resources',{credentials:'same-origin',headers:{'Accept':'application/json'}})
+    .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+    .then(function(d){ S=d; build(); })
+    .catch(function(){ el('res-server').textContent="Could not read this server's capacity."; });
+})();
+</script></div>
+<div class="card"><h3>Owner & Site Details</h3><form method="post" action="/site-ops/{{ site.site }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="fields"><input name="owner_name" value="{{ ops.owner_name }}" placeholder="Owner name"><input name="owner_email" value="{{ ops.owner_email }}" placeholder="Owner email"><input name="owner_phone" value="{{ ops.owner_phone }}" placeholder="Owner phone"><input name="external_url" value="{{ ops.external_url }}" placeholder="External monitor URL"></div><p><textarea name="notes" rows="5" placeholder="Site notes">{{ ops.notes }}</textarea></p>{% if current_role in ['admin','user'] %}<button class="btn" type="submit">Save Site Details</button>{% endif %}</form></div></section>
 </main>
 <script>
 function showTab(id,el){document.querySelectorAll('.tabpane').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById('tab-'+id).classList.add('active');el.classList.add('active')}
@@ -866,9 +963,20 @@ def _bg_env_int(name, default):
         return default
 
 
+def _bg_default_max_heavy():
+    """Heavy tasks allowed at once when WP_BG_MAX_HEAVY isn't set: 1 on a small
+    server (under 6 GB of RAM), where two concurrent builds, image pulls or
+    restores can exhaust memory before either shows up in the free-memory
+    reading; 2 on anything larger."""
+    try:
+        return 1 if psutil.virtual_memory().total < 6 * 1024 ** 3 else 2
+    except Exception:
+        return 1
+
+
 # Resource guards. All overridable in manager.env; defaults suit a shared host.
-BG_MAX_HEAVY = max(1, _bg_env_int("WP_BG_MAX_HEAVY", 2))                     # heavy tasks running at once
-BG_MEM_RESERVE_MB = _bg_env_int("WP_BG_MEM_RESERVE_MB", 1536)                # RAM always left free for live sites
+BG_MAX_HEAVY = max(1, _bg_env_int("WP_BG_MAX_HEAVY", _bg_default_max_heavy()))   # heavy tasks running at once
+BG_MEM_RESERVE_MB = _bg_env_int("WP_BG_MEM_RESERVE_MB", 0)                   # RAM always left free for live sites (0 = automatic)
 BG_DISK_RESERVE_MB = _bg_env_int("WP_BG_DISK_RESERVE_MB", 5120)              # disk always left free for live sites
 BG_MAX_DISK_USED_PCT = _bg_env_int("WP_BG_MAX_DISK_USED_PCT", 92)            # refuse heavy work above this
 BG_BACKUP_DISK_RESERVE_MB = _bg_env_int("WP_BG_BACKUP_DISK_RESERVE_MB", 2048)
@@ -980,6 +1088,16 @@ def _bg_gb(mb):
     return f"{mb / 1024:.1f} GB"
 
 
+def _bg_mem_reserve_mb(total_mb):
+    """RAM always kept free for live sites. Scales with the server: a fixed
+    1.5 GB suits a 16 GB host but would block almost everything on a 4 GB
+    one. Automatic = 15% of the server's RAM, between 0.5 and 1.5 GB;
+    WP_BG_MEM_RESERVE_MB overrides it."""
+    if BG_MEM_RESERVE_MB > 0:
+        return BG_MEM_RESERVE_MB
+    return int(max(512, min(1536, total_mb * 0.15)))
+
+
 def _bg_check(mem_mb, disk_mb):
     """('ok'|'wait'|'fail', message). Disk problems fail at once (waiting
     won't free disk); memory problems are worth waiting out because other
@@ -991,9 +1109,10 @@ def _bg_check(mem_mb, disk_mb):
     if disk_mb and r["disk_free_mb"] < disk_mb + BG_DISK_RESERVE_MB:
         return "fail", (f"only {_bg_gb(r['disk_free_mb'])} of disk is free; this needs about {_bg_gb(disk_mb)} plus "
                         f"{_bg_gb(BG_DISK_RESERVE_MB)} kept in reserve for live sites.")
-    if mem_mb and r["avail_mb"] < mem_mb + BG_MEM_RESERVE_MB:
-        return "wait", (f"only {_bg_gb(r['avail_mb'])} of memory is free; this needs about {_bg_gb(mem_mb)} plus "
-                        f"{_bg_gb(BG_MEM_RESERVE_MB)} kept in reserve for live sites.")
+    reserve = _bg_mem_reserve_mb(r["total_mb"])
+    if mem_mb and r["avail_mb"] < mem_mb + reserve:
+        return "wait", (f"only {_bg_gb(r['avail_mb'])} of memory is free (the server has {_bg_gb(r['total_mb'])} in total); "
+                        f"this needs about {_bg_gb(mem_mb)} plus {_bg_gb(reserve)} kept in reserve for live sites.")
     return "ok", ""
 
 
@@ -1033,7 +1152,9 @@ def _bg_cost(fn_name, kwargs):
         if a == "update":
             return True, 512, 1024
         if a == "backup":
-            return True, 512, _bg_last_backup_mb(site)
+            # A backup streams data through tar/gzip and a database dump: it needs disk, not memory.
+            # Gating the safety net on free RAM would only stop backups when the server is busiest.
+            return True, 0, _bg_last_backup_mb(site)
     return False, 0, 0
 
 
@@ -1124,7 +1245,7 @@ def _bg_snapshot():
         host_url=request.host_url,
         form=request.form.to_dict(flat=False),
         referrer=request.referrer or "",
-        ip=request.remote_addr or "-",
+        ip=client_ip(),
         ua=request.headers.get("User-Agent", ""),
         session={k: session[k] for k in list(session.keys()) if k != "_flashes"},
     )
@@ -1438,10 +1559,65 @@ def mandatory_account_security_gate():
     return None
 
 
+_TRUSTED_PROXY_CACHE = {"at": 0.0, "ips": set()}
+
+
+def _ip_or_none(value):
+    """Normalised IP string, or None if it isn't a valid address. IPv4-mapped IPv6 becomes plain IPv4."""
+    try:
+        addr = ipaddress.ip_address((value or "").strip())
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return str(addr)
+
+
+def trusted_proxy_ips():
+    """Addresses we accept proxy headers (X-Real-IP / X-Forwarded-For) from: loopback, anything in
+    WP_TRUSTED_PROXY_IPS, and the Nginx Proxy Manager container's own addresses (plus its networks'
+    gateways), looked up live and cached for a minute so a recreated container with a new address
+    is still recognised. Anything else - e.g. a LAN machine connecting straight to the dashboard -
+    is NOT trusted, so it cannot forge the headers."""
+    now = time.time()
+    if now - _TRUSTED_PROXY_CACHE["at"] < 60 and _TRUSTED_PROXY_CACHE["ips"]:
+        return _TRUSTED_PROXY_CACHE["ips"]
+    ips = {_ip_or_none(p) or p for p in TRUSTED_PROXY_IPS}
+    try:
+        c = docker_client.containers.get(os.environ.get("WP_NPM_CONTAINER", "wp-npm"))
+        c.reload()
+        for net in ((c.attrs.get("NetworkSettings", {}) or {}).get("Networks", {}) or {}).values():
+            for key in ("IPAddress", "GlobalIPv6Address", "Gateway", "IPv6Gateway"):
+                value = _ip_or_none(net.get(key))
+                if value:
+                    ips.add(value)
+    except Exception:
+        pass
+    _TRUSTED_PROXY_CACHE.update(at=now, ips=ips)
+    return ips
+
+
+def resolve_client_ip():
+    """The real visitor's address. Behind Nginx Proxy Manager the connecting address is always the
+    proxy, so when (and only when) the connection came from a trusted proxy use X-Real-IP (which
+    nginx overwrites, so a visitor cannot forge it), else the right-most X-Forwarded-For address
+    that isn't itself a trusted proxy."""
+    peer = _ip_or_none(request.remote_addr) or (request.remote_addr or "")
+    trusted = trusted_proxy_ips()
+    if peer and peer in trusted:
+        real = _ip_or_none(request.headers.get("X-Real-IP", ""))
+        if real:
+            return real
+        for candidate in reversed([p for p in request.headers.get("X-Forwarded-For", "").split(",") if p.strip()]):
+            value = _ip_or_none(candidate)
+            if value and value not in trusted:
+                return value
+    return peer
+
+
 def client_ip():
-    # Dashboard should normally be LAN-only. If later proxied, use a trusted
-    # reverse proxy configuration before relying on X-Forwarded-For.
-    return request.remote_addr or "-"
+    # Used for the audit trail, geolocation and the login lockout. See resolve_client_ip().
+    return resolve_client_ip() or "-"
 
 _GEOIP_CACHE = {}
 
@@ -1530,6 +1706,18 @@ add_action('wp_login', function($user_login, $user) {
     if (!in_array('administrator', (array)$user->roles, true)) return;
     if (!defined('WP_HOST_LOGIN_CALLBACK_URL') || !defined('WP_HOST_LOGIN_CALLBACK_SECRET')) return;
     $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
+    // Behind the reverse proxy REMOTE_ADDR is the proxy itself (a private address). Only then,
+    // take the visitor's address from the headers the proxy sets.
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+        $candidates = array();
+        if (!empty($_SERVER['HTTP_X_REAL_IP'])) { $candidates[] = trim($_SERVER['HTTP_X_REAL_IP']); }
+        if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+            foreach (array_reverse(explode(',', $_SERVER['HTTP_X_FORWARDED_FOR'])) as $part) { $candidates[] = trim($part); }
+        }
+        foreach ($candidates as $candidate) {
+            if (filter_var($candidate, FILTER_VALIDATE_IP) !== false) { $ip = $candidate; break; }
+        }
+    }
     $payload = wp_json_encode(array(
         'site' => defined('WP_HOST_SITE_ID') ? WP_HOST_SITE_ID : '-',
         'username' => $user_login,
@@ -1556,6 +1744,29 @@ def install_login_reporter_files(site_dir, site, login_secret):
     mu_dir = site_dir / "wordpress" / "wp-content" / "mu-plugins"
     mu_dir.mkdir(parents=True, exist_ok=True)
     (mu_dir / "wp-host-login-reporter.php").write_text(WP_LOGIN_REPORTER_MU_PLUGIN)
+
+def refresh_login_reporters():
+    """Bring the login-reporter mu-plugin on every site that already has it up to date. It is a
+    managed file ("auto-installed, do not edit"), so sites installed before an improvement pick it
+    up on the next dashboard start without anyone clicking Install / Reinstall."""
+    try:
+        if not SITES.exists():
+            return
+        for d in SITES.iterdir():
+            f = d / "wordpress" / "wp-content" / "mu-plugins" / "wp-host-login-reporter.php"
+            try:
+                if f.is_file():
+                    current = f.read_text()
+                    if "WP Host Manager - admin login reporter" in current and current != WP_LOGIN_REPORTER_MU_PLUGIN:
+                        f.write_text(WP_LOGIN_REPORTER_MU_PLUGIN)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+refresh_login_reporters()
+
 
 def record_wp_admin_login(site, username, ip):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -2102,18 +2313,11 @@ TRUSTED_PROXY_IPS = {
 }
 
 def detected_client_ip():
-    # Only trust X-Forwarded-For when the immediate connecting peer is a
-    # known, trusted reverse proxy. Otherwise anyone could set this header
-    # themselves to spoof their source IP and bypass IP-restricted features
-    # (e.g. temporary phpMyAdmin/SFTP access).
-    peer = request.remote_addr or ""
-    if peer in TRUSTED_PROXY_IPS:
-        forwarded = request.headers.get("X-Forwarded-For", "")
-        candidate = forwarded.split(",", 1)[0].strip() if forwarded else peer
-    else:
-        candidate = peer
+    # Same trusted-proxy rules as client_ip(): proxy headers are only believed when the
+    # connection really came from our proxy, otherwise anyone could forge their source IP
+    # and bypass IP-restricted features (e.g. temporary phpMyAdmin/SFTP access).
     try:
-        return _valid_source_ip(candidate)
+        return _valid_source_ip(resolve_client_ip())
     except Exception:
         return request.remote_addr or ""
 
@@ -4175,6 +4379,345 @@ def create_payload_site(site, domain, memory, cpus, db_memory, admin_email, admi
     _payload_launch(site, dict(first_run=True, domain=domain, auto_proxy=auto_proxy,
                                admin_email=admin_email, admin_password=admin_password))
     return admin_password, meta
+
+
+# ---------------------------------------------------------------------------
+# Per-site resources (memory / CPU)
+#
+# A site's limits live in its .env (WP_MEMORY / WEB_MEMORY / APP_MEMORY,
+# *_CPUS, DB_MEMORY), which its compose file reads. Changing them = rewrite
+# those values, recreate only the containers whose limits changed, then check
+# the RUNNING containers really have the new limits. If anything fails the old
+# values are restored. Every change is checked against what the SERVER can
+# actually support - a limit larger than the machine protects nothing.
+# ---------------------------------------------------------------------------
+RESOURCE_MEMORY_STEPS_MB = [256, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 24576, 32768]
+RESOURCE_CPU_STEPS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0]
+RESOURCE_MAX_SINGLE_FRACTION = 0.75     # one container may never be allowed most of the server
+RESOURCE_HARD_COMMIT_FRACTION = 1.5     # all limits together beyond this is refused
+RESOURCE_WARN_COMMIT_FRACTION = 1.0     # beyond this needs an explicit "I understand"
+_RES_LIMITS_CACHE = {"at": 0.0, "data": None}
+
+RESOURCE_LAYOUT = {
+    "wordpress": {
+        "app": dict(label="Website (WordPress)", service="wordpress", mem="WP_MEMORY", cpu="WP_CPUS", min_mb=512, container="{site}-wp"),
+        "db": dict(label="Database (MariaDB)", service="db", mem="DB_MEMORY", min_mb=256, container="{site}-db"),
+    },
+    "html_php": {
+        "app": dict(label="Website (HTML/PHP)", service="web", mem="WEB_MEMORY", cpu="WEB_CPUS", min_mb=256, container="{site}-web"),
+        "db": dict(label="Database (MariaDB)", service="db", mem="DB_MEMORY", min_mb=256, container="{site}-db"),
+    },
+    "payload": {
+        "app": dict(label="Website (Payload CMS)", service="app", mem="APP_MEMORY", cpu="APP_CPUS", min_mb=768, container="{site}-app"),
+        "db": dict(label="Database (MongoDB)", service="db", mem="DB_MEMORY", min_mb=512, container="{site}-db"),
+    },
+}
+
+
+def _res_parse_mem_mb(text):
+    m = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([mMgG])[bB]?\s*", str(text or ""))
+    if not m:
+        return None
+    value = float(m.group(1))
+    return int(round(value * (1024 if m.group(2).lower() == "g" else 1)))
+
+
+def _res_fmt_mem(mb):
+    return f"{mb // 1024}g" if mb % 1024 == 0 else f"{mb}m"
+
+
+def _res_fmt_cpu(cpus):
+    return f"{float(cpus):.2f}"
+
+
+def _res_read_env(site_dir):
+    env = {}
+    path = site_dir / ".env"
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    return env
+
+
+def _res_write_env(site_dir, updates):
+    """Rewrite only the given keys, keeping every other line (and order)."""
+    path = site_dir / ".env"
+    lines = path.read_text().splitlines() if path.exists() else []
+    out, seen = [], set()
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if ("=" in line and not line.lstrip().startswith("#")) else None
+        if key in updates:
+            out.append(f"{key}={updates[key]}")
+            seen.add(key)
+        else:
+            out.append(line)
+    for k, v in updates.items():
+        if k not in seen:
+            out.append(f"{k}={v}")
+    tmp = site_dir / ".env.tmp"
+    tmp.write_text("\n".join(out) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def server_capacity():
+    vm = psutil.virtual_memory()
+    try:
+        swap_mb = psutil.swap_memory().total // (1024 * 1024)
+    except Exception:
+        swap_mb = 0
+    return dict(total_mb=vm.total // (1024 * 1024), cpus=os.cpu_count() or 1, swap_mb=swap_mb)
+
+
+def _res_container_limits(max_age=15):
+    """{container name: (memory_mb or 0 if unlimited, cpus or 0 if unlimited)} for every container, cached briefly."""
+    now = time.time()
+    if _RES_LIMITS_CACHE["data"] is not None and now - _RES_LIMITS_CACHE["at"] < max_age:
+        return _RES_LIMITS_CACHE["data"]
+    out = {}
+    try:
+        for c in docker_client.containers.list(all=True):
+            try:
+                c.reload()
+                hc = c.attrs.get("HostConfig", {}) or {}
+                out[c.name] = (int((hc.get("Memory") or 0) // (1024 * 1024)), round((hc.get("NanoCpus") or 0) / 1e9, 2))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    _RES_LIMITS_CACHE.update(at=now, data=out)
+    return out
+
+
+def _res_live(container):
+    try:
+        c = docker_client.containers.get(container)
+        c.reload()
+        hc = c.attrs.get("HostConfig", {}) or {}
+        return int((hc.get("Memory") or 0) // (1024 * 1024)), round((hc.get("NanoCpus") or 0) / 1e9, 2)
+    except Exception:
+        return None, None
+
+
+def site_resource_services(site, meta):
+    layout = RESOURCE_LAYOUT.get(meta.get("type", "wordpress"), RESOURCE_LAYOUT["wordpress"])
+    services = {"app": layout["app"]}
+    if meta.get("type") != "html_php" or meta.get("has_database", False):
+        services["db"] = layout["db"]
+    return services
+
+
+def site_resources_state(site):
+    site_dir = SITES / site
+    meta = site_metadata(site_dir) or {}
+    if not site_dir.exists() or not meta:
+        return None
+    env = _res_read_env(site_dir)
+    cap = server_capacity()
+    total = cap["total_mb"]
+    max_single = int(total * RESOURCE_MAX_SINGLE_FRACTION)
+    limits = _res_container_limits()
+    prefix = f"{site}-"
+    other = sum(mem for name, (mem, _) in limits.items() if not name.startswith(prefix))
+    uncapped = sum(1 for name, (mem, _) in limits.items() if not name.startswith(prefix) and mem == 0)
+    services = []
+    for key, spec in site_resource_services(site, meta).items():
+        mem_mb = _res_parse_mem_mb(env.get(spec["mem"]))
+        cpus = None
+        if spec.get("cpu"):
+            try:
+                cpus = float(env.get(spec["cpu"]))
+            except (TypeError, ValueError):
+                cpus = None
+        live_mem, live_cpu = _res_live(spec["container"].format(site=site))
+        services.append(dict(key=key, label=spec["label"], memory_mb=mem_mb, cpus=cpus, min_mb=spec["min_mb"],
+                             can_cpu=bool(spec.get("cpu")), container=spec["container"].format(site=site),
+                             live_memory_mb=live_mem, live_cpus=live_cpu))
+    mem_opts = sorted({s for s in RESOURCE_MEMORY_STEPS_MB if s <= max_single} |
+                      {s["memory_mb"] for s in services if s["memory_mb"]})
+    cpu_opts = sorted({c for c in RESOURCE_CPU_STEPS if c <= cap["cpus"]} |
+                      {s["cpus"] for s in services if s["cpus"]})
+    busy = None
+    if meta.get("type") == "payload" and meta.get("build_status") == "building":
+        busy = "A Payload build is running - wait for it to finish before changing resources."
+    return dict(
+        ok=True, type=meta.get("type", "wordpress"), busy=busy,
+        server=dict(total_mb=total, cpus=cap["cpus"], swap_mb=cap["swap_mb"], committed_other_mb=other, uncapped=uncapped),
+        limits=dict(max_single_mb=max_single, warn_commit_mb=int(total * RESOURCE_WARN_COMMIT_FRACTION),
+                    hard_commit_mb=int(total * RESOURCE_HARD_COMMIT_FRACTION)),
+        options=dict(memory_mb=mem_opts, cpus=cpu_opts), services=services)
+
+
+def validate_site_resources(state, requested):
+    """requested = {"app_memory_mb", "app_cpus", "db_memory_mb"} (db key only if the site has one).
+    Returns (errors, warnings, needs_ack). Lowering a limit is always allowed - it cannot make
+    anything worse - so the capacity checks only apply to increases."""
+    errors, warnings = [], []
+    lim, srv = state["limits"], state["server"]
+    by_key = {s["key"]: s for s in state["services"]}
+    total_after = total_before = srv["committed_other_mb"]
+    for key, svc in by_key.items():
+        cur = svc["memory_mb"] or 0
+        new = requested.get(f"{key}_memory_mb")
+        if new is None:
+            errors.append(f"{svc['label']}: no memory value given.")
+            continue
+        if new not in state["options"]["memory_mb"]:
+            errors.append(f"{svc['label']}: {new} MB is not an available size.")
+        if new < svc["min_mb"]:
+            errors.append(f"{svc['label']} needs at least {svc['min_mb']} MB to run reliably.")
+        if new > cur and new > lim["max_single_mb"]:
+            errors.append(f"{svc['label']}: one container may use at most {lim['max_single_mb']} MB on this server "
+                          f"({int(RESOURCE_MAX_SINGLE_FRACTION * 100)}% of its {srv['total_mb']} MB) - more would let it starve everything else.")
+        total_before += cur
+        total_after += new
+        if svc["can_cpu"]:
+            new_cpu = requested.get(f"{key}_cpus")
+            if new_cpu is None:
+                errors.append(f"{svc['label']}: no CPU value given.")
+            elif new_cpu < 0.25:
+                errors.append(f"{svc['label']}: CPU must be at least 0.25.")
+            elif new_cpu > srv["cpus"] and new_cpu > (svc["cpus"] or 0):
+                errors.append(f"{svc['label']}: this server only has {srv['cpus']} CPU(s).")
+            elif new_cpu not in state["options"]["cpus"]:
+                errors.append(f"{svc['label']}: {new_cpu} CPU is not an available size.")
+    needs_ack = False
+    if total_after > total_before:
+        if total_after > lim["hard_commit_mb"]:
+            errors.append(f"All memory limits together would be {total_after} MB on a {srv['total_mb']} MB server "
+                          f"(more than {int(RESOURCE_HARD_COMMIT_FRACTION * 100)}%). Lower another limit first.")
+        elif total_after > lim["warn_commit_mb"]:
+            needs_ack = True
+            warnings.append(f"All memory limits together would be {total_after} MB on a {srv['total_mb']} MB server. "
+                            "That is allowed, but if several sites are busy at once the server can run out of memory.")
+    if state.get("busy"):
+        errors.append(state["busy"])
+    return errors, warnings, needs_ack
+
+
+def apply_site_resources(site, values):
+    """values: {"app_memory_mb","app_cpus","db_memory_mb"}. Rewrites .env + site.json, recreates only the
+    services whose limits changed, verifies the running containers, restores the old values on any failure."""
+    site_dir = SITES / site
+    meta = site_metadata(site_dir) or {}
+    services = site_resource_services(site, meta)
+    env_path, meta_path = site_dir / ".env", site_dir / "site.json"
+    old_env_text = env_path.read_text() if env_path.exists() else ""
+    old_meta_text = meta_path.read_text() if meta_path.exists() else "{}"
+    old_env = _res_read_env(site_dir)
+
+    env_updates, meta_updates, changed, expect = {}, {}, [], {}
+    for key, spec in services.items():
+        new_mem = _res_fmt_mem(values[f"{key}_memory_mb"])
+        if new_mem != old_env.get(spec["mem"]):
+            changed.append(spec["service"])
+        env_updates[spec["mem"]] = new_mem
+        meta_updates["memory" if key == "app" else "db_memory"] = new_mem
+        expect[spec["container"].format(site=site)] = [values[f"{key}_memory_mb"], None]
+        if spec.get("cpu"):
+            new_cpu = _res_fmt_cpu(values[f"{key}_cpus"])
+            try:
+                same_cpu = float(old_env.get(spec["cpu"])) == float(new_cpu)
+            except (TypeError, ValueError):
+                same_cpu = False
+            if not same_cpu and spec["service"] not in changed:
+                changed.append(spec["service"])
+            env_updates[spec["cpu"]] = new_cpu
+            meta_updates["cpus"] = new_cpu
+            expect[spec["container"].format(site=site)][1] = float(new_cpu)
+    changed = list(dict.fromkeys(changed))
+    if not changed:
+        return "No change - those limits are already set."
+
+    bg_progress(15, "Saving the new limits")
+    new_meta = json.loads(old_meta_text or "{}")
+    new_meta.update(meta_updates)
+    try:
+        _res_write_env(site_dir, env_updates)
+        meta_path.write_text(json.dumps(new_meta, indent=2))
+        bg_progress(40, "Restarting " + " and ".join(changed) + " with the new limits")
+        run(["docker", "compose", "up", "-d"] + changed, cwd=site_dir, timeout=300)
+        bg_progress(85, "Checking the running containers")
+        problems = []
+        for name, (want_mem, want_cpu) in expect.items():
+            if name.rsplit("-", 1)[-1] not in {"wp", "web", "app", "db"}:
+                continue
+            live_mem, live_cpu = _res_live(name)
+            if live_mem is None:
+                problems.append(f"{name} is not running")
+            elif live_mem != want_mem:
+                problems.append(f"{name} has {live_mem} MB, expected {want_mem} MB")
+            elif want_cpu is not None and abs((live_cpu or 0) - want_cpu) > 0.01:
+                problems.append(f"{name} has {live_cpu} CPU, expected {want_cpu}")
+        if problems:
+            raise RuntimeError("; ".join(problems))
+    except Exception as exc:
+        # put everything back exactly as it was
+        try:
+            env_path.write_text(old_env_text)
+            os.chmod(env_path, 0o600)
+            meta_path.write_text(old_meta_text)
+            run(["docker", "compose", "up", "-d"] + changed, cwd=site_dir, timeout=300)
+        except Exception:
+            pass
+        _RES_LIMITS_CACHE["data"] = None
+        raise RuntimeError(f"Could not apply the new limits, so the previous ones were restored: {str(exc)[:300]}")
+    _RES_LIMITS_CACHE["data"] = None
+    parts = [f"{services[k]['label'].split(' (')[0].lower()} {_res_fmt_mem(values[f'{k}_memory_mb'])}"
+             + (f" / {_res_fmt_cpu(values[f'{k}_cpus'])} CPU" if services[k].get("cpu") else "") for k in services]
+    return "Applied and verified on the running containers: " + ", ".join(parts) + "."
+
+
+@APP.get("/api/site/<site>/resources")
+def site_resources_api(site):
+    if not session.get("authenticated"):
+        return jsonify(error="not signed in"), 401
+    if not SITE_RE.match(site):
+        return jsonify(error="unknown site"), 404
+    state = site_resources_state(site)
+    if state is None:
+        return jsonify(error="unknown site"), 404
+    return jsonify(state)
+
+
+@APP.post("/site/<site>/resources")
+@operator_required
+@background_task(lambda kw: f"Changing resources for {kw['site']}", lock=lambda kw: "site:" + kw["site"],
+                 after=lambda kw: url_for("site_dashboard", site=kw["site"]))
+def site_resources_apply(site):
+    if not SITE_RE.match(site):
+        abort(404)
+    state = site_resources_state(site)
+    if state is None:
+        abort(404)
+    requested = {}
+    try:
+        for svc in state["services"]:
+            requested[f"{svc['key']}_memory_mb"] = int(request.form.get(f"{svc['key']}_memory_mb", ""))
+            if svc["can_cpu"]:
+                requested[f"{svc['key']}_cpus"] = float(request.form.get(f"{svc['key']}_cpus", ""))
+    except ValueError:
+        flash(f"{site}: resources not changed - the values were not valid numbers.")
+        log_action("site_resources", site, "failed", "invalid input")
+        return redirect(url_for("site_dashboard", site=site))
+    errors, warnings, needs_ack = validate_site_resources(state, requested)
+    if not errors and needs_ack and request.form.get("ack") != "1":
+        errors.append("These limits add up to more than the server's memory - tick the box to confirm you understand.")
+    if errors:
+        flash(f"{site}: resources not changed. " + " ".join(errors))
+        log_action("site_resources", site, "failed", " ".join(errors)[:300])
+        return redirect(url_for("site_dashboard", site=site))
+    before = {s["key"]: (s["memory_mb"], s["cpus"]) for s in state["services"]}
+    try:
+        message = apply_site_resources(site, requested)
+        log_action("site_resources", site, "success", f"before {before} -> after {requested}"[:300])
+        flash(f"{site}: {message}")
+    except Exception as exc:
+        log_action("site_resources", site, "failed", str(exc)[:300])
+        flash(f"{site}: {exc}")
+    return redirect(url_for("site_dashboard", site=site))
 
 
 def list_sites():
