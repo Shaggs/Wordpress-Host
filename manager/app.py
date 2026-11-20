@@ -128,6 +128,9 @@ FIREWALL_DEFAULT_MINUTES = 30
 FIREWALL_ALLOWED_MINUTES = {15, 30, 60}
 FIREWALL_LOCK = threading.RLock()
 NPM_URL = os.environ.get("WP_NPM_URL", "http://127.0.0.1:81").rstrip("/")
+# HTTP/2 for NEW proxy hosts. Off until the full NGINX2Root fix (nginx 1.31.9, docker-nginx-full PR #45) is in NPM.
+# Updates made by the dashboard keep whatever HTTP/2 setting a host already has.
+NPM_HTTP2_DEFAULT = os.environ.get("WP_NPM_HTTP2_DEFAULT", "0").strip().lower() in ("1", "true", "yes", "on")
 NPM_EMAIL = os.environ.get("WP_NPM_EMAIL", "")
 NPM_PASSWORD = os.environ.get("WP_NPM_PASSWORD", "")
 LE_EMAIL = os.environ.get("WP_LE_EMAIL", NPM_EMAIL)
@@ -2037,7 +2040,7 @@ def npm_create_proxy(site, domain, certificate_id=0, forward_host=None, forward_
                 "advanced_config": existing.get("advanced_config", ""),
                 "meta": existing.get("meta", {}),
                 "allow_websocket_upgrade": True,
-                "http2_support": True,
+                "http2_support": bool(existing.get("http2_support", NPM_HTTP2_DEFAULT)),
                 "hsts_enabled": bool(existing.get("hsts_enabled", False)),
                 "hsts_subdomains": bool(existing.get("hsts_subdomains", False)),
                 "trust_forwarded_proto": True,
@@ -2068,7 +2071,7 @@ def npm_create_proxy(site, domain, certificate_id=0, forward_host=None, forward_
         "advanced_config": "",
         "meta": {},
         "allow_websocket_upgrade": True,
-        "http2_support": True,
+        "http2_support": NPM_HTTP2_DEFAULT,
         "hsts_enabled": False,
         "hsts_subdomains": False,
         "trust_forwarded_proto": True,
@@ -2102,7 +2105,7 @@ def npm_attach_certificate(proxy, certificate_id):
         "advanced_config": proxy.get("advanced_config", ""),
         "meta": proxy.get("meta", {}),
         "allow_websocket_upgrade": True,
-        "http2_support": True,
+        "http2_support": bool(proxy.get("http2_support", NPM_HTTP2_DEFAULT)),
         "hsts_enabled": bool(proxy.get("hsts_enabled", False)),
         "hsts_subdomains": bool(proxy.get("hsts_subdomains", False)),
         "trust_forwarded_proto": True,
