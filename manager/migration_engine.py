@@ -499,11 +499,17 @@ RewriteRule . /index.php [L]
     os.chmod(ht, 0o644)
     return "Imported .htaccess preserved; clean WordPress rewrite rules installed"
 
+def quarantine_dir(site):
+    """Quarantined imports live next to the web root, never inside it (so they cannot be requested)."""
+    q = SITES / site / "quarantine"
+    q.mkdir(parents=True, exist_ok=True)
+    os.chmod(q, 0o700)
+    return q
+
 def quarantine_risky_components(site):
     live = SITES / site / "wordpress"
     content = live / "wp-content"
-    qroot = live / ".platform-quarantine"
-    qroot.mkdir(parents=True, exist_ok=True)
+    qroot = quarantine_dir(site)
     moved = []
 
     mu = content / "mu-plugins"
@@ -526,7 +532,7 @@ def quarantine_risky_components(site):
 
 def restore_compatible_mu_plugins(site):
     live = SITES / site / "wordpress"
-    qmu = live / ".platform-quarantine" / "mu-plugins"
+    qmu = quarantine_dir(site) / "mu-plugins"
     active = live / "wp-content" / "mu-plugins"
     active.mkdir(parents=True, exist_ok=True)
     results = []
