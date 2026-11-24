@@ -39,6 +39,21 @@ from flask_wtf.csrf import CSRFProtect
 import psutil
 import requests
 
+
+class _ClosingConnection(sqlite3.Connection):
+    """`with` commits (or rolls back on error) and then really closes."""
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
+def _sq_connect(*args, **kwargs):
+    kwargs.setdefault("factory", _ClosingConnection)
+    return sqlite3.connect(*args, **kwargs)
+
+
 PLATFORM_NAME = os.environ.get("PLATFORM_NAME", "WP Host")
 PLATFORM_TITLE = os.environ.get("PLATFORM_TITLE", f"{PLATFORM_NAME} WordPress Hosting")
 MANAGER_DOMAIN = os.environ.get("MANAGER_DOMAIN", "")
@@ -111,8 +126,15 @@ BACKUP_HOUR = 2
 LOGIN_WINDOW_MINUTES = 15
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCK_MINUTES = 15
-SECURITY_SCAN_INTERVAL_MINUTES = 15
+SECURITY_SCAN_INTERVAL_MINUTES = max(5, int(os.environ.get("WP_SECURITY_SCAN_MINUTES", "60")))
 SECURITY_EMAIL_SEVERITIES = {"HIGH", "CRITICAL"}
+# Emails are limited to these finding types (everything is still shown on the Alerts page).
+SECURITY_EMAIL_TYPES = {"new_admin_user", "php_in_uploads", "unexpected_root_entry"}
+LEGACY_HEALTH_EMAILS = os.environ.get("WP_LEGACY_HEALTH_EMAILS", "0") == "1"
+UPTIME_INTERVAL_SECONDS = max(30, int(os.environ.get("WP_UPTIME_INTERVAL", "60")))
+UPTIME_FAILURES_TO_ALERT = max(1, int(os.environ.get("WP_UPTIME_FAILURES", "3")))
+UPTIME_REMINDER_HOURS = max(0, int(os.environ.get("WP_UPTIME_REMINDER_HOURS", "6")))
+SECURITY_REEMAIL_AFTER_HOURS = 24
 SECURITY_HASH_FILES = [
     "index.php", "wp-config.php", ".htaccess", "wp-load.php",
     "wp-settings.php", "wp-login.php", "wp-blog-header.php", "xmlrpc.php"
@@ -136,6 +158,35 @@ NPM_PASSWORD = os.environ.get("WP_NPM_PASSWORD", "")
 LE_EMAIL = os.environ.get("WP_LE_EMAIL", NPM_EMAIL)
 
 docker_client = docker.from_env()
+
+# --- every docker exec gets a time limit, so one unresponsive container cannot freeze the dashboard ---
+DOCKER_EXEC_TIMEOUT = int(os.environ.get("WP_DOCKER_EXEC_TIMEOUT", "45"))
+import docker.models.containers as _docker_containers
+_exec_run_original = _docker_containers.Container.exec_run
+
+def _exec_run_guarded(self, cmd, *args, _timeout=None, **kwargs):
+    if kwargs.get("stream") or kwargs.get("detach") or kwargs.get("socket"):
+        return _exec_run_original(self, cmd, *args, **kwargs)
+    limit = _timeout or DOCKER_EXEC_TIMEOUT
+    box = {}
+    def _run():
+        try:
+            box["r"] = _exec_run_original(self, cmd, *args, **kwargs)
+        except BaseException as exc:
+            box["e"] = exc
+    t = threading.Thread(target=_run, daemon=True, name="docker-exec")
+    t.start(); t.join(limit)
+    if t.is_alive():
+        try:
+            print(f"[wp-host] docker exec in {getattr(self, 'name', '?')} gave no answer within {limit}s: {str(cmd)[:120]}", flush=True)
+        except Exception:
+            pass
+        raise TimeoutError(f"{getattr(self, 'name', 'container')} did not respond within {limit}s")
+    if "e" in box:
+        raise box["e"]
+    return box["r"]
+
+_docker_containers.Container.exec_run = _exec_run_guarded
 
 SITE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[A-Za-z]{2,63}$")
@@ -181,7 +232,7 @@ EMAIL_SETTINGS_V911_HTML = r"""
 <link rel="stylesheet" href="/static/theme.css">
 <style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}.wrap{max-width:900px;margin:42px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:18px}.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}label{display:block;font-weight:700;margin-top:14px}input,select{width:100%;padding:10px;margin-top:5px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}.grid{display:grid;grid-template-columns:2fr 1fr;gap:12px}.btn{border:0;border-radius:7px;padding:10px 14px;color:white;font-weight:800;cursor:pointer;background:var(--blue);margin-top:16px}.green{background:var(--green)}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><p><a href="/">← Dashboard</a> · <a href="/users">Users</a></p><h1>Settings</h1>
 {% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}
-<section class="card"><h2>SMTP</h2><p class="muted">Shared by platform alerts, new-user temporary passwords and password recovery.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="save"><div class="grid"><label>SMTP Host<input name="smtp_host" value="{{e.smtp_host}}"></label><label>Port<input name="smtp_port" type="number" value="{{e.smtp_port}}"></label></div><label>Username<input name="smtp_username" value="{{e.smtp_username}}"></label><label>Password<input name="smtp_password" type="password" placeholder="{{'Saved — leave blank to keep current password' if password_saved else 'SMTP password'}}"></label><label>From Address<input name="from_email" type="email" value="{{e.from_email}}"></label><label>Security<select name="security"><option value="starttls" {% if e.security=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if e.security=='ssl' %}selected{% endif %}>SSL/TLS</option><option value="none" {% if e.security=='none' %}selected{% endif %}>None</option></select></label><h3>Platform Alerts</h3><label><input style="width:auto" type="checkbox" name="enabled" {% if e.enabled %}checked{% endif %}> Enable alert emails</label><label>Alert Recipients<input name="recipients" value="{{e.recipients}}"></label><div class="grid"><label>Health check minutes<input name="check_minutes" type="number" min="1" max="60" value="{{e.check_minutes}}"></label><label>Failure threshold<input name="failure_threshold" type="number" min="1" max="10" value="{{e.failure_threshold}}"></label></div><label><input style="width:auto" type="checkbox" name="send_recovery" {% if e.send_recovery %}checked{% endif %}> Send recovery notifications</label><button class="btn">Save Email Settings</button></form></section><section class="card"><h2>Test SMTP</h2><p class="muted">Save settings first. The test is sent to the Alert Recipients above.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="test">{% for name in ['smtp_host','smtp_port','smtp_username','from_email','recipients','security','check_minutes','failure_threshold'] %}<input type="hidden" name="{{name}}" value="{{e[name]}}">{% endfor %}{% if e.enabled %}<input type="hidden" name="enabled" value="on">{% endif %}{% if e.send_recovery %}<input type="hidden" name="send_recovery" value="on">{% endif %}<button class="btn green">Send Test Email</button></form></section><section class="card"><h2>Vulnerability Scanning</h2><p class="muted">Optionally check installed plugins/themes against Wordfence's known-vulnerability feed during migration scans, in addition to the wordpress.org outdated-version check.</p><form method="post" action="/admin/settings/wordfence/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label><input style="width:auto" type="checkbox" name="enabled" {% if wordfence.enabled %}checked{% endif %}> Enable Wordfence vulnerability feed matching</label><label>Wordfence API Key (optional)<input name="api_key" type="password" placeholder="{{ 'Saved — leave blank to keep current key' if wordfence.api_key_saved else 'API key (optional, increases feed access)' }}"></label><button class="btn">Save Scanning Settings</button></form></section><section class="card"><h2>Login Logs</h2><p class="muted">Every attempt to sign in to this dashboard, successful or not.</p><table style="width:100%;border-collapse:collapse;font-size:13px"><tr><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Time</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Username</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Event</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Result</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">IP Address</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Country</th></tr>{% for a in auth_events %}<tr><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.timestamp }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.username }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.event }}</td><td style="padding:9px;border-bottom:1px solid var(--line)"><span style="color:{{ '#4ade80' if a.result in ['success','email_sent'] else ('#fbbf24' if a.result=='rate_limited' else '#fb7185') }}">{{ a.result }}</span></td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.ip }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.country }}</td></tr>{% else %}<tr><td colspan="6" style="padding:9px">No login activity recorded yet.</td></tr>{% endfor %}</table></section><section class="card"><h2>WordPress Admin Logins</h2><p class="muted">Administrator logins reported by the login-reporter plugin installed on each WordPress site. Use "Install Login Reporting" on a site's dashboard to enable this for sites created before this feature existed.</p><table style="width:100%;border-collapse:collapse;font-size:13px"><tr><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Time</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Site</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Username</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">IP Address</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Country</th></tr>{% for w in wp_admin_logins %}<tr><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.timestamp }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.site }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.username }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.ip }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ w.country }}</td></tr>{% else %}<tr><td colspan="5" style="padding:9px">No WordPress admin logins recorded yet.</td></tr>{% endfor %}</table></section></div></body></html>
+<section class="card"><h2>SMTP</h2><p class="muted">Shared by platform alerts, new-user temporary passwords and password recovery.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="save"><div class="grid"><label>SMTP Host<input name="smtp_host" value="{{e.smtp_host}}"></label><label>Port<input name="smtp_port" type="number" value="{{e.smtp_port}}"></label></div><label>Username<input name="smtp_username" value="{{e.smtp_username}}"></label><label>Password<input name="smtp_password" type="password" placeholder="{{'Saved — leave blank to keep current password' if password_saved else 'SMTP password'}}"></label><label>From Address<input name="from_email" type="email" value="{{e.from_email}}"></label><label>Security<select name="security"><option value="starttls" {% if e.security=='starttls' %}selected{% endif %}>STARTTLS</option><option value="ssl" {% if e.security=='ssl' %}selected{% endif %}>SSL/TLS</option><option value="none" {% if e.security=='none' %}selected{% endif %}>None</option></select></label><h3>Platform Alerts</h3><label><input style="width:auto" type="checkbox" name="enabled" {% if e.enabled %}checked{% endif %}> Enable alert emails</label><label>Alert Recipients<input name="recipients" value="{{e.recipients}}"></label><div class="grid"><label>Health check minutes<input name="check_minutes" type="number" min="1" max="60" value="{{e.check_minutes}}"></label><label>Failure threshold<input name="failure_threshold" type="number" min="1" max="10" value="{{e.failure_threshold}}"></label></div><label><input style="width:auto" type="checkbox" name="send_recovery" {% if e.send_recovery %}checked{% endif %}> Send recovery notifications</label><button class="btn">Save Email Settings</button></form></section><section class="card"><h2>Test SMTP</h2><p class="muted">Save settings first. The test is sent to the Alert Recipients above.</p><form method="post" action="/admin/email-settings"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input type="hidden" name="mode" value="test">{% for name in ['smtp_host','smtp_port','smtp_username','from_email','recipients','security','check_minutes','failure_threshold'] %}<input type="hidden" name="{{name}}" value="{{e[name]}}">{% endfor %}{% if e.enabled %}<input type="hidden" name="enabled" value="on">{% endif %}{% if e.send_recovery %}<input type="hidden" name="send_recovery" value="on">{% endif %}<button class="btn green">Send Test Email</button></form></section><section class="card"><h2>Vulnerability Scanning</h2><p class="muted">Optionally check installed plugins/themes against Wordfence's known-vulnerability feed during migration scans, in addition to the wordpress.org outdated-version check.</p><form method="post" action="/admin/settings/wordfence/save"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label><input style="width:auto" type="checkbox" name="enabled" {% if wordfence.enabled %}checked{% endif %}> Enable Wordfence vulnerability feed matching</label><label>Wordfence API Key (optional)<input name="api_key" type="password" placeholder="{{ 'Saved — leave blank to keep current key' if wordfence.api_key_saved else 'API key (optional, increases feed access)' }}"></label><button class="btn">Save Scanning Settings</button></form></section><section class="card"><h2>Login Logs</h2><p class="muted">Every attempt to sign in to this dashboard, successful or not.</p><table style="width:100%;border-collapse:collapse;font-size:13px"><tr><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Time</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Username</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Event</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Result</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">IP Address</th><th style="text-align:left;padding:9px;border-bottom:1px solid var(--line)">Country</th></tr>{% for a in auth_events %}<tr><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.timestamp }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.username }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.event }}</td><td style="padding:9px;border-bottom:1px solid var(--line)"><span style="color:{{ '#4ade80' if a.result in ['success','email_sent'] else ('#fbbf24' if a.result=='rate_limited' else '#fb7185') }}">{{ a.result }}</span></td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.ip }}</td><td style="padding:9px;border-bottom:1px solid var(--line)">{{ a.country }}</td></tr>{% else %}<tr><td colspan="6" style="padding:9px">No login activity recorded yet.</td></tr>{% endfor %}</table></section></div></body></html>
 """
 
 ALERTS_HTML = r"""
@@ -219,13 +270,13 @@ ALERTS_HTML = r"""
 </div>
 {% if f.evidence and f.evidence != '-' %}<p><b>Evidence:</b> {{ f.evidence }}</p>{% endif %}
 {% if f.finding_type == 'php_in_uploads' and php_previews.get(f.id) %}<div style="margin:10px 0"><b>File contents</b> <span class="muted">({{ php_previews[f.id].size }} bytes)</span><pre style="white-space:pre-wrap;word-break:break-all;background:#0b1727;border:1px solid #263850;border-radius:8px;padding:10px;color:#e7eef8;max-height:170px;overflow:auto;margin:6px 0;font-size:12px">{{ php_previews[f.id].text }}</pre><div style="color:{{ '#4ade80' if php_previews[f.id].can_ack else '#fbbf24' }};font-size:13px">{{ php_previews[f.id].verdict }}</div></div>{% endif %}
-<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">{% if f.finding_type == 'php_in_uploads' and php_previews.get(f.id) and php_previews[f.id].can_ack %}<form method="post" action="/alerts/acknowledge-file/{{ f.id }}" onsubmit="return confirm('Acknowledge this file and add it to the baseline for {{ f.site }}? Any file with exactly this content is then accepted, and it alerts again if its content ever changes.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#047857">Acknowledge &amp; add to baseline</button></form>{% endif %}{% if f.finding_type == 'backup_cleanup_suggested' %}<form method="post" action="/action/{{ f.site }}/remove-oldest-backup" onsubmit="return confirm('Remove the single oldest backup for {{ f.site }}? This cannot be undone.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Remove Oldest Backup</button></form>{% endif %}<form method="post" action="/alerts/dismiss/{{ f.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Dismiss for 24h</button></form></div>
+<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">{% if f.finding_type == 'php_in_uploads' and php_previews.get(f.id) and php_previews[f.id].can_ack %}<form method="post" action="/alerts/acknowledge-file/{{ f.id }}" onsubmit="return confirm('{% if php_previews[f.id].kind == 'data' %}Acknowledge this protected data file for {{ f.site }}? It is accepted by its structure rather than its exact content, because plugins rewrite these files. It alerts again if anything executable is ever added to it, but a swapped data blob would not be noticed.{% else %}Acknowledge this file and add it to the baseline for {{ f.site }}? Any file with exactly this content is then accepted, and it alerts again if its content ever changes.{% endif %}')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#047857">Acknowledge &amp; add to baseline</button></form>{% endif %}{% if f.finding_type == 'backup_cleanup_suggested' %}<form method="post" action="/action/{{ f.site }}/remove-oldest-backup" onsubmit="return confirm('Remove the single oldest backup for {{ f.site }}? This cannot be undone.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Remove Oldest Backup</button></form>{% endif %}<form method="post" action="/alerts/dismiss/{{ f.id }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Dismiss for 24h</button></form></div>
 </section>
 {% endfor %}
 
 {% if acknowledged_php %}<h2>Acknowledged files (part of the baseline)</h2>
-<div class="card"><p class="muted" style="margin-top:0">These PHP placeholder files inside wp-content/uploads were reviewed and accepted. They are matched by exact content, so a file alerts again if its content ever changes. Remove an entry to have it flagged again at the next scan.</p>
-{% for a in acknowledged_php %}<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line)"><div style="min-width:0"><strong>{{ a.site }}</strong> <span class="muted">{{ a.path }}</span><div class="muted" style="font-size:12px">{{ a.size }} bytes &middot; acknowledged by {{ a.by }} on {{ a.at }} &middot; <code>{{ a.preview }}</code></div></div><form method="post" action="/alerts/acknowledged/{{ a.site }}/{{ a.sha256 }}/remove" onsubmit="return confirm('Remove this acknowledgement? The file will be flagged again at the next scan.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Remove</button></form></div>{% endfor %}</div>{% endif %}
+<div class="card"><p class="muted" style="margin-top:0">These files inside wp-content/uploads were reviewed and accepted. Placeholders are matched by exact content, so they alert again if it ever changes; protected data files (which plugins rewrite) are matched by structure and alert again if anything executable is added. Remove an entry to have it flagged again at the next scan.</p>
+{% for a in acknowledged_php %}<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line)"><div style="min-width:0"><strong>{{ a.site }}</strong> <span class="muted">{{ a.path }}</span><div class="muted" style="font-size:12px">{{ a.size }} bytes &middot; {{ a.kind_label }} &middot; acknowledged by {{ a.by }} on {{ a.at }} &middot; <code>{{ a.preview }}</code></div></div><form method="post" action="/alerts/acknowledged/{{ a.site }}/{{ a.sha256 }}/remove" onsubmit="return confirm('Remove this acknowledgement? The file will be flagged again at the next scan.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn" style="background:#475569">Remove</button></form></div>{% endfor %}</div>{% endif %}
 <h2>Site Operations & Details</h2>
 {% for s in sites %}{% set op=site_ops[s.site] %}
 <div class="card"><div class="head"><div><strong>{{ s.site }}</strong><div class="muted">{{ s.domain }} · {{ op.mode|upper }} · External {{ op.last_external_status or '-' }}</div></div></div>
@@ -285,6 +336,7 @@ HTML = r"""
 SITES_HTML = r"""
 <!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sites · WP Host Manager</title>
+<script src="/live-stats.js" defer></script>
 <link rel="stylesheet" href="/static/theme.css">
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
@@ -299,15 +351,19 @@ label{display:block;font-weight:700;font-size:12px;margin-bottom:4px;color:var(-
 <div class="main"><header class="top"><h1>Sites</h1><a href="/">← Dashboard</a></header><main class="content">
 <div class="toolbar"><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"><div>{% if current_role in ['admin','user'] %}<button class="btn" type="button" onclick="const x=document.getElementById('newSite');x.style.display=x.style.display==='none'?'block':'none'">＋ New Site</button>{% endif %} &nbsp; {{ sites|length }} hosted site(s)</div></div>
 {% if current_role in ['admin','user'] %}<div id="newSite" style="display:none;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px;margin-bottom:16px"><h3>Create Site</h3><form method="post" action="/create"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px">
-<label>Site Type<select name="site_type" id="siteType" onchange="toggleSiteType()"><option value="wordpress">WordPress</option><option value="html_php">HTML / PHP</option><option value="payload">Payload CMS</option></select></label>
+<label>Site Type<select name="site_type" id="siteType" onchange="toggleSiteType()"><option value="wordpress">WordPress</option><option value="html_php">HTML / PHP</option><option value="cafe">Cafe website</option><option value="restaurant">Restaurant website (Node)</option><option value="payload">Payload CMS</option></select></label>
 <label>Site ID<input name="site" required placeholder="Site ID"></label>
 <label>Domain<input name="domain" required placeholder="Domain"></label>
 <label>Memory<select name="memory"><option>1g</option><option>2g</option><option>4g</option></select></label>
 <label>CPU<select name="cpus"><option>1.00</option><option>2.00</option><option>4.00</option></select></label>
-<label>Database Memory<select name="db_memory"><option>512m</option><option>1g</option><option>2g</option></select></label>
+<label class="dbMem">Database Memory<select name="db_memory"><option>512m</option><option>1g</option><option>2g</option></select></label>
 <label class="wpOnly">Admin Username<input name="wp_admin" value="admin" required></label>
 <label class="wpOnly">Admin Email<input name="wp_email" type="email" placeholder="Admin email" required></label>
 <label class="wpOnly">Admin Password<input name="wp_password" placeholder="Admin password (blank = generate)" type="password"></label>
+<label class="cafeOnly" style="display:none">Cafe name<input name="cafe_name" maxlength="80" placeholder="e.g. The Daily Grind"></label>
+<label class="cafeOnly" style="display:none">Admin password<input name="cafe_password" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="8+ characters"></label>
+<label class="restOnly" style="display:none">Business name<input name="rest_name" maxlength="80" placeholder="e.g. Crazy Indian"></label>
+<label class="restOnly" style="display:none">Admin password<input name="rest_password" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="8+ characters"></label>
 <label class="phpOnly" style="display:none">Database<select name="include_db"><option value="no">No database</option><option value="yes">Include database</option></select></label>
 <label>Proxy / SSL<select name="auto_proxy"><option value="yes">Proxy + SSL</option><option value="no">No proxy (HTTP only)</option></select></label>
 </div><p><button class="btn">Create Site</button></p></form></div>
@@ -322,6 +378,9 @@ function toggleSiteType(){
     if(field) field.required = show && (field.name==='wp_email' || (field.name==='wp_admin' && t==='wordpress'));
   });
   document.querySelectorAll('.phpOnly').forEach(function(el){el.style.display = t==='html_php' ? '' : 'none';});
+  document.querySelectorAll('.cafeOnly').forEach(function(el){var f=el.querySelector('input'); el.style.display = t==='cafe' ? '' : 'none'; if(f) f.required = (t==='cafe');});
+  document.querySelectorAll('.restOnly').forEach(function(el){var f=el.querySelector('input'); el.style.display = t==='restaurant' ? '' : 'none'; if(f) f.required = (t==='restaurant');});
+  document.querySelectorAll('.dbMem').forEach(function(el){el.style.display = (t==='cafe'||t==='restaurant') ? 'none' : '';});
 }
 </script>{% endif %}
 <div class="grid" id="sitesGrid">
@@ -329,7 +388,7 @@ function toggleSiteType(){
 <a class="site" href="/site/{{ s.site }}" data-find="{{ (s.site ~ ' ' ~ s.domain ~ ' ' ~ s.status ~ ' ' ~ s.owner_name)|lower }}">
 <div class="head"><div><div class="name">{{ s.site }}</div><div class="domain">{{ s.domain }}</div></div>
 <span class="badge {{ 'live' if s.status=='running' and s.mode=='live' else 'maint' if s.mode=='maintenance' else 'bad' }}">{{ s.mode|upper if s.mode!='live' else s.status|upper }}</span></div>
-<div class="stats"><div class="stat"><b>Health</b>{{ s.health }}</div><div class="stat"><b>WordPress</b>{{ s.wp_version }}</div><div class="stat"><b>CPU / RAM</b>{{ s.live_cpu }}% / {{ s.live_memory }}</div><div class="stat"><b>SFTP</b>{{ ('ON · ' ~ s.sftp_port) if s.sftp_enabled else 'OFF' }}</div><div class="stat"><b>Backup</b>{{ s.backup }}</div></div>
+<div class="stats"><div class="stat"><b>Health</b>{{ s.health }}</div><div class="stat"><b>WordPress</b>{{ s.wp_version }}</div><div class="stat" style="grid-column:1/-1"><b>CPU / RAM (live)</b><div data-live-site="{{ s.site }}"><span class="lv-off">{{ s.live_cpu }}% / {{ s.live_memory }}</span></div></div><div class="stat"><b>SFTP</b>{{ ('ON · ' ~ s.sftp_port) if s.sftp_enabled else 'OFF' }}</div><div class="stat"><b>Backup</b>{{ s.backup }}</div></div>
 <div class="footer"><span class="owner">{{ s.owner_name or 'No owner assigned' }}</span><span>Open dashboard →</span></div>
 </a>
 {% endfor %}
@@ -341,6 +400,7 @@ function toggleSiteType(){
 SITE_HTML = r"""
 <!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ site.domain }} · WP Host Manager</title>
+<script src="/live-stats.js" defer></script>
 <link rel="stylesheet" href="/static/theme.css">
 <style>
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}a{color:#60a5fa;text-decoration:none}.sidebar{position:fixed;inset:0 auto 0 0;width:224px;background:var(--side);border-right:1px solid var(--line);padding:18px 14px}.brand{font-size:18px;font-weight:850;margin:5px 8px 22px}.nav a{display:block;padding:11px 12px;margin:3px 0;border-radius:8px;color:var(--muted)}.nav a.active,.nav a:hover{background:#173c7a;color:#fff}.main{margin-left:224px;padding:22px;min-height:100vh}.back{display:inline-block;margin-bottom:15px;color:#d6e0ed}.hero{display:grid;grid-template-columns:1fr 370px;gap:16px}.card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:12px;padding:17px}.title{font-size:27px;font-weight:900;margin:0 0 5px}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}.chip{background:#17263b;padding:6px 9px;border-radius:7px;font-size:12px}.good{color:#4ade80}.bad{color:#fb7185}.warn{color:#fbbf24}.statusline{font-size:18px;font-weight:850}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:16px 0}.metric{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px}.metric b{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.metric strong{font-size:20px}.actionsbar{display:grid;grid-template-columns:1.2fr .8fr auto;gap:20px;align-items:end}.sectiontitle{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:8px}.buttonrow{display:flex;gap:9px;flex-wrap:wrap}.btn{border:1px solid #2f5ea5;background:#12294b;color:#fff;border-radius:8px;padding:10px 16px;font-weight:800;cursor:pointer}.btn.green{background:#0a493b;border-color:#087e61}.btn.orange{background:#5b360e;border-color:#b5670b}.btn.red{background:#561b29;border-color:#c62b43}.btn.purple{background:#34205b;border-color:#7241b5}.access{display:flex;gap:9px}.morewrap{position:relative}.morepanel{display:none;position:absolute;right:0;top:50px;width:760px;z-index:20;background:var(--field);border:1px solid var(--line);border-radius:12px;padding:13px;box-shadow:0 18px 50px #0009}.morewrap.open .morepanel{display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.moreitem{border:1px solid var(--line);border-radius:9px;padding:10px}.moreitem p{font-size:11px;color:var(--muted);min-height:42px}.moreitem .btn{width:100%;padding:8px}.tabs{display:flex;gap:4px;margin-top:17px;border-bottom:1px solid var(--line);overflow-x:auto}.tab{padding:11px 15px;color:#b8c5d6;cursor:pointer;border-bottom:2px solid transparent}.tab.active{color:#60a5fa;border-color:#3b82f6}.tabpane{display:none;padding-top:16px}.tabpane.active{display:block}.info{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.info .card .row{display:flex;justify-content:space-between;gap:12px;margin:9px 0;font-size:13px}.table{width:100%;border-collapse:collapse;font-size:12px}.table th,.table td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}.table th{color:#93c5fd}.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.note{white-space:pre-wrap;color:#cad5e3}.fields{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.fields input,.fields textarea{width:100%;background:var(--field);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:9px}
@@ -356,7 +416,7 @@ SITE_HTML = r"""
 <section class="card"><div class="statusline {{ 'good' if site.status=='running' else 'bad' }}">● {{ site.status|title }}</div><div class="row">Mode: <b>{{ site.mode|upper }}</b></div><div class="row">Uptime: <b>{{ runtime.uptime }}</b></div><div class="row">Last backup: <b>{{ site.backup }}</b></div><div class="row">Restarts: <b>{{ runtime.restart_count }}</b></div></section>
 </div>
 
-<div class="metrics"><div class="metric"><b>CPU Usage</b><strong>{{ site.live_cpu }}%</strong></div><div class="metric"><b>RAM Usage</b><strong>{{ site.live_memory }}</strong><div>{{ site.memory }} limit</div></div><div class="metric"><b>Storage</b><strong>{{ site.storage }}</strong></div><div class="metric"><b>Core Integrity</b><strong class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</strong></div><div class="metric"><b>External Uptime</b><strong>{{ ops.last_external_status or '-' }}</strong><div>{{ ops.last_external_ms or '-' }} ms</div></div></div>
+<div class="metrics"><div class="metric" style="min-width:230px"><b>CPU / RAM (live)</b><div data-live-site="{{ site.site }}"><span class="lv-off">{{ site.live_cpu }}% / {{ site.live_memory }} of {{ site.memory }}</span></div></div><div class="metric"><b>Storage</b><strong>{{ site.storage }}</strong></div><div class="metric"><b>Core Integrity</b><strong class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</strong></div><div class="metric"><b>External Uptime</b><strong>{{ ops.last_external_status or '-' }}</strong><div>{{ ops.last_external_ms or '-' }} ms</div></div></div>
 
 <section class="card actionsbar">
 <div><div class="sectiontitle">Actions</div><div class="buttonrow">
@@ -425,11 +485,11 @@ SITE_HTML = r"""
 </div></section>
 
 <section class="tabpane" id="tab-backups"><div class="card"><h3>Backup Plan</h3><p class="muted">Controls how often this site is backed up automatically and how long local backups are kept. Backups still run at the platform's scheduled time ({{ "%02d:00"|format(backup_hour) }}) - frequency just decides which days that happens on.</p><form method="post" action="/site/{{ site.site }}/backup-plan"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:9px"><label>Frequency<select name="frequency"><option value="daily" {{ 'selected' if backup_plan.frequency=='daily' }}>Daily</option><option value="weekly" {{ 'selected' if backup_plan.frequency=='weekly' }}>Weekly</option></select></label><label>Retention (days)<input type="number" name="retention_days" min="1" max="365" value="{{ backup_plan.retention_days }}"></label></div><p><button class="btn">Save Backup Plan</button></p></form></div><div class="card"><h3>Backup History</h3><table class="table"><tr><th>Backup</th><th>Created (Adelaide)</th><th>Size</th><th>Actions</th></tr>{% for b in backups %}<tr><td>{{ b.name }}</td><td>{{ b.created }}</td><td>{{ b.size }}</td><td><form method="post" action="/action/{{ site.site }}/restore/{{ b.stamp }}" onsubmit="return confirm('Restore {{ site.site }} from this backup? This replaces the live site files and database with this backup\'s contents.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn orange">Restore</button></form></td></tr>{% else %}<tr><td colspan="4">No backups found.</td></tr>{% endfor %}</table></div></section>
-<section class="tabpane" id="tab-plugins"><div class="card"><h3>Plugins</h3><table class="table"><tr><th>Plugin</th><th>Version</th></tr>{% for p in runtime.plugin_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No plugin inventory available.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-plugins"><div class="card"><h3>Plugins</h3>{% if runtime.plugin_error %}<p class="bad">Could not read the plugin list: {{ runtime.plugin_error }}</p>{% endif %}<p><a class="btn blue" href="/site/{{ site.site }}/plugins">Check for updates &amp; update safely &rarr;</a> <span class="muted">{{ runtime.plugin_items|selectattr('active')|list|length }} active of {{ runtime.plugin_items|length }} installed</span></p><table class="table"><tr><th>Plugin</th><th>Status</th><th>Version</th><th>Update</th></tr>{% for p in runtime.plugin_items %}<tr><td><b>{{ p.title or p.name }}</b><br><span class="muted">{{ p.name }}</span></td><td>{{ 'Active' if p.active else 'Inactive' }}</td><td>{{ p.version }}</td><td>{% if p.update_version %}<span class="warn">{{ p.update_version }} available</span>{% elif p.update_checked %}<span class="good">Up to date</span>{% else %}<span class="muted">not checked</span>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No plugins found.</td></tr>{% endfor %}</table></div></section>
 <section class="tabpane" id="tab-themes"><div class="card"><h3>Themes</h3><table class="table"><tr><th>Theme</th><th>Version</th></tr>{% for p in runtime.theme_items %}<tr><td>{{ p.name }}</td><td>{{ p.version }}</td></tr>{% else %}<tr><td colspan="2">No theme inventory available.</td></tr>{% endfor %}</table></div></section>
 <section class="tabpane" id="tab-database"><div class="card"><h3>Database</h3><p>Database host: <b>{{ runtime.db_host }}</b></p><p>Database name: <b>{{ runtime.db_name }}</b></p><p>Database user: <b>{{ runtime.db_user }}</b></p>{% if current_role in ['admin','user'] %}{% if pma_access.open %}<a class="btn green" target="_blank" rel="noopener" href="http://{{ manager_public_host }}:{{ site.phpmyadmin_port }}">Open phpMyAdmin ↗</a> <form method="post" action="/access/{{ site.site }}/phpmyadmin/close" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn red">Close Firewall</button></form>{% else %}<form method="post" target="_blank" action="/access/{{ site.site }}/phpmyadmin/open/30"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="source_ip" value="{{ client_ip }}"><input type="hidden" name="launch" value="1"><button class="btn">Open phpMyAdmin for 30m ↗</button></form>{% endif %}{% endif %}</div></section>
-<section class="tabpane" id="tab-logs"><div class="card"><h3>Site Audit Log</h3><table class="table"><tr><th>Time (Adelaide)</th><th>User</th><th>Action</th><th>Result</th><th>Detail</th></tr>{% for x in audits %}<tr><td>{{ x.timestamp }}</td><td>{{ x.username }}</td><td>{{ x.action }}</td><td>{{ x.result }}</td><td>{{ x.detail }}</td></tr>{% else %}<tr><td colspan="5">No site-specific audit events.</td></tr>{% endfor %}</table></div></section>
-<section class="tabpane" id="tab-security"><div class="card"><h3>Security</h3><p>WordPress core checksums: <b class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</b></p><table class="table"><tr><th>Severity</th><th>Finding</th><th>Path</th><th>Last Seen (Adelaide)</th></tr>{% for f in findings %}<tr><td>{{ f.severity }}</td><td>{{ f.message }}</td><td>{{ f.path }}</td><td>{{ f.last_seen }}</td></tr>{% else %}<tr><td colspan="4">No active security findings.</td></tr>{% endfor %}</table></div><div class="card"><h3>Version &amp; Vulnerability Scan</h3>{% if not vuln_scan %}<p class="muted">No scan has run yet. This runs automatically after each migration.</p>{% else %}<p class="muted">Checked {{ vuln_scan.checked_at }}</p><table class="table"><tr><th>Component</th><th>Installed</th><th>Latest</th><th>Status</th></tr>{% if vuln_scan.core %}<tr><td>{{ vuln_scan.core.name }}</td><td>{{ vuln_scan.core.installed }}</td><td>{{ vuln_scan.core.latest or '-' }}</td><td>{% if vuln_scan.core.vulnerabilities %}{% for v in vuln_scan.core.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif vuln_scan.core.outdated %}<span class="bad">Outdated</span>{% elif vuln_scan.core.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endif %}{% for p in vuln_scan.plugins %}<tr><td>{{ p.name }} (plugin)</td><td>{{ p.installed or '-' }}</td><td>{{ p.latest or '-' }}</td><td>{% if p.vulnerabilities %}{% for v in p.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif p.outdated %}<span class="bad">Outdated</span>{% elif p.closed %}<span class="bad">Closed on wp.org</span>{% elif p.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif p.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}{% for t in vuln_scan.themes %}<tr><td>{{ t.name }} (theme)</td><td>{{ t.installed or '-' }}</td><td>{{ t.latest or '-' }}</td><td>{% if t.vulnerabilities %}{% for v in t.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif t.outdated %}<span class="bad">Outdated</span>{% elif t.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif t.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</div></section>
+<section class="tabpane" id="tab-logs"><div class="card"><h3>Site Audit Log</h3><table class="table"><tr><th>Time (Adelaide)</th><th>User</th><th>Action</th><th>Result</th><th>Detail</th></tr>{% for x in audits %}<tr><td>{{ x.timestamp }}</td><td>{{ x.username }}</td><td>{{ x.action }}</td><td>{{ x.result }}</td><td>{{ x.detail }}</td></tr>{% else %}<tr><td colspan="5">No site-specific audit events.</td></tr>{% endfor %}</table></div><div class="card"><h3>WordPress Admin Logins</h3><table class="table"><tr><th>Time (Adelaide)</th><th>Username</th><th>IP</th><th>Country</th></tr>{% for w in site_wp_logins %}<tr><td>{{ w.timestamp }}</td><td>{{ w.username }}</td><td>{{ w.ip }}</td><td>{{ w.country }}</td></tr>{% else %}<tr><td colspan="4">No admin logins recorded for this site yet.</td></tr>{% endfor %}</table></div></section>
+<section class="tabpane" id="tab-security"><div class="card"><h3>Security</h3><p>WordPress core checksums: <b class="{{ 'good' if runtime.core_checksum=='Verified' else 'bad' }}">{{ runtime.core_checksum }}</b></p><table class="table"><tr><th>Severity</th><th>Finding</th><th>Path</th><th>Last Seen (Adelaide)</th></tr>{% for f in findings %}<tr><td>{{ f.severity }}</td><td>{{ f.message }}</td><td>{{ f.path }}</td><td>{{ f.last_seen }}</td></tr>{% else %}<tr><td colspan="4">No active security findings.</td></tr>{% endfor %}</table></div><div class="card"><h3>Version &amp; Vulnerability Scan</h3><p><a class="btn" href="/site/{{ site.site }}/plugins">Update plugins safely &rarr;</a></p>{% if not vuln_scan %}<p class="muted">No scan has run yet. This runs automatically after each migration.</p>{% else %}<p class="muted">Checked {{ vuln_scan.checked_at }}</p><table class="table"><tr><th>Component</th><th>Installed</th><th>Latest</th><th>Status</th></tr>{% if vuln_scan.core %}<tr><td>{{ vuln_scan.core.name }}</td><td>{{ vuln_scan.core.installed }}</td><td>{{ vuln_scan.core.latest or '-' }}</td><td>{% if vuln_scan.core.vulnerabilities %}{% for v in vuln_scan.core.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif vuln_scan.core.outdated %}<span class="bad">Outdated</span>{% elif vuln_scan.core.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endif %}{% for p in vuln_scan.plugins %}<tr><td>{{ p.name }} (plugin)</td><td>{{ p.installed or '-' }}</td><td>{{ p.latest or '-' }}</td><td>{% if p.vulnerabilities %}{% for v in p.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif p.outdated %}<span class="bad">Outdated</span>{% elif p.closed %}<span class="bad">Closed on wp.org</span>{% elif p.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif p.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}{% for t in vuln_scan.themes %}<tr><td>{{ t.name }} (theme)</td><td>{{ t.installed or '-' }}</td><td>{{ t.latest or '-' }}</td><td>{% if t.vulnerabilities %}{% for v in t.vulnerabilities %}<span class="bad">{{ v.cve }} ({{ v.severity }})</span>{% if v.fixed_in %} - fix in {{ v.fixed_in }}{% endif %}<br>{% endfor %}{% elif t.outdated %}<span class="bad">Outdated</span>{% elif t.not_on_repo %}<span class="muted">Not on wp.org</span>{% elif t.latest %}<span class="good">Current</span>{% else %}<span class="warn">Unknown</span>{% endif %}</td></tr>{% endfor %}</table>{% endif %}</div></section>
 {% if site.sftp_enabled %}<section class="card" style="margin-top:16px"><h3>SFTP Access</h3><div class="row"><span>Status</span><b class="good">ENABLED</b></div><div class="row"><span>Host</span><b>{{ manager_public_host }}</b></div><div class="row"><span>Allocated Port</span><b>{{ site.sftp_port }}</b></div><div class="row"><span>Username</span><b>wordpress</b></div><div class="row"><span>Protocol</span><b>SFTP / SSH</b></div><p class="muted">Use the allocated port shown above. The password is shown only when SFTP is enabled/reset. Use SFTP, not FTP/FTPS.</p></section>{% endif %}
 <section class="tabpane" id="tab-migration">
 <div class="card">
@@ -575,6 +635,7 @@ HTML = r"""
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{ platform_title }}</title>
+<script src="/live-stats.js" defer></script>
 <link rel="stylesheet" href="/static/theme.css">
 <style>
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}a{color:#82b6ff;text-decoration:none}
@@ -593,23 +654,17 @@ HTML = r"""
 </style></head><body>
 <aside class="sidebar">
 <div class="brand"><div class="brandmark">{{ platform_name[:1]|upper }}</div><div><strong>{{ platform_name }}</strong><small>Hosting Manager</small></div></div>
-<nav class="nav"><a class="active" href="/">⌂ Dashboard</a><a href="/sites">▦ Sites</a><a href="#backups">◫ Backups</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_alert_count %}<span class="bad">({{ security_alert_count }})</span>{% endif %}</a>{% endif %}{% if current_role == 'admin' %}<a href="/users">♟ Users</a><a href="/admin/email-settings">⚙ Settings</a><a href="/admin/backup-destination">💾 Backup Destination</a><a href="/admin/ports">⇄ Port Manager</a>{% endif %}<a href="#system">⚙ System</a><a href="#logs">▤ Logs</a></nav>
+<nav class="nav"><a class="active" href="/">⌂ Dashboard</a><a href="/sites">▦ Sites</a><a href="#backups">◫ Backups</a>{% if current_role in ['admin','user'] %}<a href="/alerts">⚠ Alerts {% if security_alert_count %}<span class="bad">({{ security_alert_count }})</span>{% endif %}</a>{% endif %}{% if current_role == 'admin' %}<a href="/users">♟ Users</a><a href="/admin/email-settings">⚙ Settings</a><a href="/admin/monitoring">📡 Monitoring &amp; Alerts</a><a href="/admin/backup-destination">💾 Backup Destination</a><a href="/admin/ports">⇄ Port Manager</a>{% endif %}<a href="#system">⚙ System</a><a href="#logs">▤ Logs</a></nav>
 <div class="sidefoot"><div class="health"><h4>● System Healthy</h4><div class="mrow"><span>CPU</span><span>{{ host_stats.cpu }}%</span></div><div class="track"><b style="width:{{ host_stats.cpu }}%"></b></div><div class="mrow"><span>RAM</span><span>{{ host_stats.ram_percent }}%</span></div><div class="track"><b style="width:{{ host_stats.ram_percent }}%"></b></div>{% for d in host_stats.disks %}<div class="mrow"><span>{{ d.mountpoint }}</span><span>{{ d.percent }}%</span></div><div class="track"><b style="width:{{ d.percent }}%"></b></div>{% endfor %}</div>
 <div class="userbox"><div class="avatar">{{ current_user[:1]|upper }}</div><div><strong>{{ current_user }}</strong><div class="muted">{{ current_role|title }}</div></div></div><p><a href="/logout">⇱ Log out</a></p></div>
 </aside>
-<div class="content"><header class="top"><h1>Dashboard</h1><div><form method="post" action="/account/theme" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="theme" onchange="this.form.submit()" title="Colour scheme"><option value="midnight" {{ 'selected' if current_theme=='midnight' else '' }}>🌙 Midnight</option><option value="light" {{ 'selected' if current_theme=='light' else '' }}>☀ Light</option><option value="forest" {{ 'selected' if current_theme=='forest' else '' }}>🌲 Forest</option><option value="sunset" {{ 'selected' if current_theme=='sunset' else '' }}>🌇 Sunset</option></select></form><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"> <a class="btn blue" href="/">↻ Refresh</a></div></header><main>
+<div class="content"><header class="top"><h1>Dashboard</h1><div><form method="post" action="/account/theme" style="display:inline-block;margin-right:8px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="theme" onchange="this.form.submit()" title="Colour scheme"><option value="midnight" {{ 'selected' if current_theme=='midnight' else '' }}>🌙 Midnight</option><option value="light" {{ 'selected' if current_theme=='light' else '' }}>☀ Light</option><option value="forest" {{ 'selected' if current_theme=='forest' else '' }}>🌲 Forest</option><option value="sunset" {{ 'selected' if current_theme=='sunset' else '' }}>🌇 Sunset</option><option value="tel5" {{ 'selected' if current_theme=='tel5' else '' }}>🟧 Tel5</option></select></form><input class="search" placeholder="Search sites..." oninput="filterSites(this.value)"> <a class="btn blue" href="/">↻ Refresh</a></div></header><main>
 {% with messages = get_flashed_messages(with_categories=true) %}{% for category, m in messages %}{% if category == 'wp_password_reveal' %}<div class="flash" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>Admin password:</span><input type="password" id="wp-pw-reveal" value="{{ m }}" readonly style="max-width:220px;background:#0b1727;color:#fff;border:1px solid var(--line);border-radius:6px;padding:6px 8px"><button type="button" class="btn" onclick="var el=document.getElementById('wp-pw-reveal'); el.type = el.type==='password' ? 'text' : 'password'; this.textContent = el.type==='password' ? 'Show' : 'Hide';">Show</button><button type="button" class="btn blue" onclick="navigator.clipboard.writeText(document.getElementById('wp-pw-reveal').value); this.textContent='Copied!'; var b=this; setTimeout(function(){b.textContent='Copy';},1500);">Copy</button><span class="muted" style="font-size:12px">Save this now - it won't be shown again.</span></div>{% else %}<div class="flash">{{ m }}</div>{% endif %}{% endfor %}{% endwith %}
-<div class="kpis"><div class="kpi"><strong>{{ site_summary.total }}</strong>Total Sites<small>All sites on this server</small></div><div class="kpi"><strong class="good">{{ site_summary.running }}</strong>Running<small>Active and healthy</small></div><div class="kpi"><strong class="warn">{{ site_summary.not_created }}</strong>Not Created<small>Awaiting setup</small></div><div class="kpi"><strong>{{ site_summary.backups }}</strong>Total Backups<small>Across all sites</small></div><div class="kpi"><strong>{{ host_stats.disk_used }}</strong>Storage Used<small>Host filesystem</small></div></div>
+<div class="kpis six"><a class="kpi klink" href="/sites"><strong>{{ site_summary.total }}</strong>Total Sites<small>Open sites &rarr;</small></a><div class="kpi"><strong class="good">{{ site_summary.running }}</strong>Running<small>Active and healthy</small></div><div class="kpi"><strong class="{{ 'warn' if site_summary.not_created else 'good' }}">{{ site_summary.not_created }}</strong>Attention<small>Stopped, unhealthy or not set up</small></div>{% if current_role in ['admin','user'] %}<a class="kpi klink" href="/alerts"><strong class="{{ 'bad' if security_alert_count else 'good' }}">{{ security_alert_count }}</strong>Security Alerts<small>Active findings &rarr;</small></a>{% else %}<div class="kpi"><strong>{{ security_alert_count }}</strong>Security Alerts<small>Active findings</small></div>{% endif %}<div class="kpi"><strong>{{ site_summary.backups }}</strong>Backups<small>Across all sites</small></div><div class="kpi"><strong>{{ host_stats.disk_used }}</strong>Storage Used<small>Host filesystem</small></div></div>
 {% if alerts %}<section class="section"><div class="sectionhead"><h2>Active Alerts</h2></div>{% for a in alerts %}<div class="flash"><b>{{ a.site }}</b>: {{ a.message }}</div>{% endfor %}</section>{% endif %}
 <section class="section">
-<div class="sectionhead"><h2>Site Overview</h2><a class="btn blue" href="/sites">Open Sites →</a></div>
-<div class="kpis" style="margin:0">
-<div class="kpi"><strong>{{ site_summary.total }}</strong>Total Sites<small>All hosted WordPress sites</small></div>
-<div class="kpi"><strong class="good">{{ site_summary.running }}</strong>Healthy<small>Running and healthy</small></div>
-<div class="kpi"><strong class="warn">{{ site_summary.not_created }}</strong>Attention<small>Stopped, unhealthy or awaiting setup</small></div>
-<div class="kpi"><strong>{{ site_summary.backups }}</strong>Backups<small>Sites with backup history</small></div>
-<div class="kpi"><strong>{{ security_alert_count }}</strong>Security Alerts<small>Active findings</small></div>
-</div></section>
+<div class="sectionhead"><h2>Live Usage by Site</h2><span class="muted" id="liveHost">Loading...</span></div>
+<p class="muted" style="margin:0 0 6px">Share of each site's allowed CPU and RAM, refreshed every few seconds.</p><div id="liveSites"><div class="lv-off">Loading...</div></div></section>
 
 <section class="section">
 <div class="sectionhead"><h2>Recent Security Alerts</h2>{% if current_role in ['admin','user'] %}<a class="btn blue" href="/alerts">View Alerts →</a>{% endif %}</div>
@@ -628,7 +683,7 @@ HTML = r"""
 <section class="section" id="system"><div class="sectionhead"><h2>System</h2></div><div class="kpis" style="margin:0"><div class="kpi"><strong>{{ host_stats.cpu }}%</strong>CPU</div><div class="kpi"><strong>{{ host_stats.ram_percent }}%</strong>RAM</div><div class="kpi"><strong>{{ host_stats.disk_percent }}%</strong>Disk</div><div class="kpi"><strong>{{ host_stats.uptime }}</strong>Uptime</div><div class="kpi"><strong>{{ host_stats.docker_running }}/{{ host_stats.docker_total }}</strong>Docker</div></div>
 <table style="margin-top:16px"><tr><th>Mountpoint</th><th>Device</th><th>FS Type</th><th>Used</th><th>Total</th><th>Free</th><th>Used %</th></tr>{% for d in host_stats.disks %}<tr><td>{{ d.mountpoint }}</td><td>{{ d.device }}</td><td>{{ d.fstype }}</td><td>{{ d.used }}</td><td>{{ d.total }}</td><td>{{ d.free }}</td><td><span class="{{ 'bad' if d.percent >= 90 else ('warn' if d.percent >= 75 else 'good') }}">{{ d.percent }}%</span></td></tr>{% else %}<tr><td colspan="7">No disks detected.</td></tr>{% endfor %}</table>
 </section>
-<section class="section" id="logs"><div class="sectionhead"><h2>Platform Action Audit</h2></div><div class="audit"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th>Result</th><th>IP</th><th>Detail</th></tr></thead><tbody>{% for a in audit_events %}<tr><td>{{ a.timestamp }}</td><td>{{ a.username }}</td><td>{{ a.action }}</td><td>{{ a.target }}</td><td>{{ a.result }}</td><td>{{ a.ip }}</td><td>{{ a.detail }}</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="section" id="logs"><div class="sectionhead"><h2>Platform Action Audit</h2></div><div class="audit"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th>Result</th><th>IP</th><th>Detail</th></tr></thead><tbody>{% for a in audit_events %}<tr><td>{{ a.timestamp }}</td><td>{{ a.username }}</td><td>{{ a.action }}</td><td>{{ a.target }}</td><td>{{ a.result }}</td><td>{{ a.ip }}</td><td>{{ a.detail }}</td></tr>{% endfor %}</tbody></table></div></section><section class="section" id="wp-logins"><div class="sectionhead"><h2>WordPress Admin Logins</h2></div><div class="audit"><table><thead><tr><th>Time</th><th>Site</th><th>Username</th><th>IP</th><th>Country</th></tr></thead><tbody>{% for w in wp_admin_logins %}<tr><td>{{ w.timestamp }}</td><td>{{ w.site }}</td><td>{{ w.username }}</td><td>{{ w.ip }}</td><td>{{ w.country }}</td></tr>{% else %}<tr><td colspan="5">No WordPress admin logins recorded yet. Install Login Reporting on a site (site page &rarr; Login Reporting).</td></tr>{% endfor %}</tbody></table></div></section>
 </main></div>
 <script>function filterSites(q){q=(q||'').toLowerCase();document.querySelectorAll('.sitecard').forEach(x=>x.style.display=(x.dataset.site+' '+x.dataset.domain+' '+x.dataset.status).includes(q)?'grid':'none')}function sortSites(){const k=document.getElementById('sorter').value,w=document.getElementById('sitecards');[...w.querySelectorAll('.sitecard')].sort((a,b)=>(a.dataset[k]||'').localeCompare(b.dataset[k]||'')).forEach(x=>w.appendChild(x))}</script>
 </body></html>
@@ -685,7 +740,7 @@ def init_auth():
             USERS_FILE.write_text(json.dumps(users, indent=2))
             os.chmod(USERS_FILE, 0o600)
 
-    with sqlite3.connect(AUTH_DB) as db:
+    with _sq_connect(AUTH_DB) as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS auth_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -714,7 +769,7 @@ def init_auth():
         db.commit()
     os.chmod(AUTH_DB, 0o600)
 
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS audit_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -849,7 +904,7 @@ def send_account_email(address, subject, body):
     return send_alert_email(subject, body, settings)
 
 def ensure_auth_v91_schema():
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("""CREATE TABLE IF NOT EXISTS password_resets_v91(
             token_hash TEXT PRIMARY KEY,
             username TEXT NOT NULL,
@@ -864,7 +919,7 @@ def new_password_reset(username):
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     now = int(time.time())
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("UPDATE password_resets_v91 SET used=1 WHERE username=?", (username,))
         db.execute("INSERT INTO password_resets_v91(token_hash,username,expires_at,used,created_at) VALUES(?,?,?,0,?)", (token_hash, username, now + 1800, now))
         db.commit()
@@ -873,7 +928,7 @@ def new_password_reset(username):
 def lookup_password_reset(token):
     ensure_auth_v91_schema()
     digest = hashlib.sha256(token.encode()).hexdigest()
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         row = db.execute("SELECT username,expires_at,used FROM password_resets_v91 WHERE token_hash=?", (digest,)).fetchone()
     if not row or row[2] or int(row[1]) < int(time.time()):
         return None
@@ -881,7 +936,7 @@ def lookup_password_reset(token):
 
 def consume_password_resets(username):
     ensure_auth_v91_schema()
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("UPDATE password_resets_v91 SET used=1 WHERE username=?", (username,))
         db.commit()
 
@@ -995,7 +1050,7 @@ _BG_POOL = []
 
 
 def _bg_db():
-    return sqlite3.connect(PLATFORM_DB, timeout=10)
+    return _sq_connect(PLATFORM_DB, timeout=10)
 
 
 def _bg_purge(db):
@@ -1079,7 +1134,7 @@ def _bg_resources():
     platform folder and the root filesystem."""
     vm = psutil.virtual_memory()
     free_mb, used_pct = None, 0
-    for p in (str(BASE), "/"):
+    for p in dict.fromkeys((str(BASE), str(SITES))):
         try:
             du = shutil.disk_usage(p)
         except Exception:
@@ -1145,7 +1200,9 @@ def _bg_cost(fn_name, kwargs):
     time and only start when memory and disk allow."""
     if fn_name == "create":
         t = request.form.get("site_type", "wordpress")
-        return True, {"payload": 3072, "html_php": 512}.get(t, 1024), {"payload": 2048}.get(t, 1024)
+        return True, {"payload": 3072, "html_php": 512, "cafe": 512, "restaurant": 512}.get(t, 1024), {"payload": 2048}.get(t, 1024)
+    if fn_name == "plugins_update_route":
+        return True, 512, 1024
     if fn_name in ("migrate_site_route", "migration_rollback_route", "staging_clone"):
         return True, 1024, 2048
     if fn_name == "restore_specific_backup":
@@ -1499,6 +1556,96 @@ BG_WIDGET_HTML = """
 """
 
 
+MOBILE_UI_HTML = r"""<style id="mobile-ui">
+.mui-btn,.mui-back{display:none}
+@media(min-width:1001px){.kpis.six{grid-template-columns:repeat(6,1fr)}}
+.kpi.klink{display:block;color:inherit}
+.kpi.klink:hover{border-color:var(--blue)}
+@media(max-width:760px){
+html,body{overflow-x:hidden;-webkit-text-size-adjust:100%}
+body.mui-lock{overflow:hidden}
+.mui-btn{display:flex;align-items:center;justify-content:center;position:absolute;left:8px;top:8px;width:40px;height:40px;z-index:5;border:1px solid rgba(127,127,127,.4);border-radius:10px;background:transparent;color:inherit;font-size:22px;line-height:1;cursor:pointer;padding:0}
+html[data-theme] .top>.mui-btn{position:absolute;left:8px;top:8px}html[data-theme="tel5"] .top>.mui-btn{color:#222021;border:0;background:transparent;font-size:26px;left:0}
+.mui-btn.mui-fixed{position:fixed;left:10px;top:10px;z-index:40;background:var(--panel,#fff);color:var(--text,#222)}
+html[data-theme="tel5"] .mui-btn.mui-fixed{background:#fff;border-color:#DCD9D6}
+body.mui-pad{padding-top:56px}
+.mui-back{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55}
+.mui-back.on{display:block}
+.sidebar{display:flex!important;flex-direction:column;position:fixed!important;inset:0 auto 0 0!important;width:272px;max-width:86vw;transform:translateX(-105%);transition:transform .22s ease;z-index:60;overflow-y:auto}
+.sidebar.mui-open{transform:none;box-shadow:0 0 40px rgba(0,0,0,.45)}
+.nav a{padding:13px 12px!important}
+.content,.main{margin-left:0!important}
+.top,html[data-theme] .top{height:auto!important;min-height:56px;flex-wrap:wrap;gap:6px 10px;padding:8px 12px 8px 58px!important}
+.top h1{font-size:18px!important;flex:1 1 auto;min-width:0;margin:0}
+.top>div{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;margin-left:auto}
+.top form{margin:0!important}
+.top select{max-width:132px;padding:7px 8px}
+.top .btn{white-space:nowrap}
+.top .search{display:none}
+html[data-theme="tel5"] .top::before{left:-24px;width:52px}
+main,.content>main{padding:12px!important}
+.section,.card{padding:14px!important}
+.btn{min-height:38px}
+input,select,textarea{font-size:16px}
+.sectionhead,.toolbar{flex-wrap:wrap;gap:6px 12px}
+.sectionhead h2{font-size:16px}
+#liveHost{flex:1 1 100%;font-size:11px}
+.kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important}
+.kpi{padding:12px!important}
+.kpi strong{font-size:20px!important;overflow-wrap:anywhere}
+.kpi small{font-size:11px!important}
+.metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+.fields,.formgrid{grid-template-columns:1fr!important}
+.title{font-size:22px!important}
+.morepanel{left:4%!important;right:4%!important;top:12%!important;max-height:76vh;overflow:auto;grid-template-columns:repeat(2,1fr)!important}
+.moreitem p{min-height:0!important}
+.actionsbar .buttonrow .btn{flex:1 1 44%}
+#liveSites .lvrow{grid-template-columns:1fr!important;gap:6px!important;padding:12px 2px!important}
+table.mui-stack,table.mui-stack tbody,table.mui-stack thead,table.mui-stack tr,table.mui-stack td{display:block;width:100%}
+table.mui-stack thead,table.mui-stack tr.mui-hrow{display:none}
+table.mui-stack tr{border:1px solid var(--line);border-radius:10px;padding:5px 12px;margin:0 0 8px}
+table.mui-stack td{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;border:0!important;padding:3px 0!important;font-size:12px;text-align:right;overflow-wrap:anywhere}
+table.mui-stack td::before{content:attr(data-label);flex:0 0 36%;max-width:42%;text-align:left;color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}
+table.mui-stack td:not([data-label])::before{display:none}
+table.mui-stack td[colspan]{display:block;text-align:left}
+}
+</style><script>(function(){
+if(window.__muiInit)return;window.__muiInit=1;
+function ready(f){document.readyState==='loading'?document.addEventListener('DOMContentLoaded',f):f()}
+function labelTables(){
+ [].forEach.call(document.querySelectorAll('table'),function(t){
+  var rows=[].slice.call(t.rows);if(!rows.length)return;
+  var hr=null;
+  for(var i=0;i<rows.length;i++){var c=rows[i].cells;if(c.length&&[].every.call(c,function(x){return x.tagName==='TH'})){hr=rows[i];break}}
+  if(!hr)return;
+  var labels=[].map.call(hr.cells,function(x){return x.textContent.trim()});
+  if(labels.length<3)return;
+  t.classList.add('mui-stack');hr.classList.add('mui-hrow');
+  rows.forEach(function(r){if(r===hr)return;var idx=0;[].forEach.call(r.cells,function(td){var span=td.colSpan||1;if(span===1&&td.tagName==='TD'&&labels[idx])td.setAttribute('data-label',labels[idx]);idx+=span})})
+ })
+}
+ready(function(){
+ var sb=document.querySelector('.sidebar');
+ if(sb&&!document.querySelector('.mui-btn')){
+  var top=document.querySelector('.top');
+  var b=document.createElement('button');b.type='button';b.className='mui-btn'+(top?'':' mui-fixed');
+  b.setAttribute('aria-label','Menu');b.setAttribute('aria-expanded','false');b.innerHTML='&#9776;';
+  var back=document.createElement('div');back.className='mui-back';
+  if(top)top.insertBefore(b,top.firstChild);else{document.body.insertBefore(b,document.body.firstChild);document.body.classList.add('mui-pad')}
+  document.body.appendChild(back);
+  function set(o){sb.classList.toggle('mui-open',o);back.classList.toggle('on',o);b.setAttribute('aria-expanded',o?'true':'false');document.body.classList.toggle('mui-lock',o)}
+  b.addEventListener('click',function(){set(!sb.classList.contains('mui-open'))});
+  back.addEventListener('click',function(){set(false)});
+  sb.addEventListener('click',function(e){if(e.target.closest&&e.target.closest('a'))set(false)});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')set(false)});
+ }
+ labelTables();
+ var tm=null;
+ if(window.MutationObserver)new MutationObserver(function(){clearTimeout(tm);tm=setTimeout(labelTables,150)}).observe(document.body,{childList:true,subtree:true});
+});
+})();</script>"""
+
+
 @APP.after_request
 def bg_inject_task_widget(resp):
     try:
@@ -1506,7 +1653,7 @@ def bg_inject_task_widget(resp):
                 and session.get("authenticated") and not request.path.startswith("/api/")):
             body = resp.get_data(as_text=True)
             if "</body>" in body and 'id="bg-task-widget"' not in body:
-                resp.set_data(body.replace("</body>", BG_WIDGET_HTML + "</body>", 1))
+                resp.set_data(body.replace("</body>", ("" if 'id="mobile-ui"' in body else MOBILE_UI_HTML) + BG_WIDGET_HTML + "</body>", 1))
     except Exception:
         pass
     return resp
@@ -1659,7 +1806,7 @@ def geoip_country(ip):
 
 def log_auth(username, event, result):
     ip = client_ip()
-    with sqlite3.connect(AUTH_DB) as db:
+    with _sq_connect(AUTH_DB) as db:
         db.execute(
             "INSERT INTO auth_events(timestamp,username,event,result,ip,user_agent,country) VALUES(?,?,?,?,?,?,?)",
             (
@@ -1675,7 +1822,7 @@ def log_auth(username, event, result):
         db.commit()
 
 def recent_auth_events(limit=50):
-    with sqlite3.connect(AUTH_DB) as db:
+    with _sq_connect(AUTH_DB) as db:
         rows = db.execute(
             "SELECT timestamp,username,event,result,ip,user_agent,country "
             "FROM auth_events ORDER BY id DESC LIMIT ?",
@@ -1777,16 +1924,22 @@ refresh_login_reporters()
 
 def record_wp_admin_login(site, username, ip):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    with sqlite3.connect(AUTH_DB) as db:
+    with _sq_connect(AUTH_DB) as db:
         db.execute("INSERT INTO wp_admin_logins(site,username,ip,country,timestamp) VALUES(?,?,?,?,?)", (site, username, ip, geoip_country(ip), now))
         db.commit()
 
-def recent_wp_admin_logins(limit=100):
-    with sqlite3.connect(AUTH_DB) as db:
-        rows = db.execute(
-            "SELECT site,username,ip,country,timestamp FROM wp_admin_logins ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+def recent_wp_admin_logins(limit=100, site=None):
+    with _sq_connect(AUTH_DB) as db:
+        if site:
+            rows = db.execute(
+                "SELECT site,username,ip,country,timestamp FROM wp_admin_logins WHERE site=? ORDER BY id DESC LIMIT ?",
+                (site, limit),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT site,username,ip,country,timestamp FROM wp_admin_logins ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
     return [dict(site=r[0], username=r[1], ip=r[2], country=r[3] or "-", timestamp=format_adelaide(r[4])) for r in rows]
 
 def login_required(fn):
@@ -1797,7 +1950,7 @@ def login_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-VALID_THEMES = {"midnight", "light", "forest", "sunset"}
+VALID_THEMES = {"midnight", "light", "forest", "sunset", "tel5"}
 
 def current_user_theme():
     username = session.get("username")
@@ -1822,9 +1975,14 @@ def account_theme_save():
 
 def log_action(action, target="-", result="success", detail=""):
     bg_note_result(result)
+    if request:                       # a person did something: show the result straight away
+        _swr_invalidate_all()
+        _sites_cache_invalidate()
+    else:                             # background event: serve cached pages, refresh behind the scenes
+        _SITES_CACHE["ts"] = 0.0
     username = session.get("username", "system") if request else "system"
     ip = client_ip() if request else "-"
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute(
             "INSERT INTO audit_events(timestamp,username,action,target,result,ip,detail) VALUES(?,?,?,?,?,?,?)",
             (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -1833,7 +1991,7 @@ def log_action(action, target="-", result="success", detail=""):
         db.commit()
 
 def recent_audit_events(limit=100):
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         rows = db.execute(
             "SELECT timestamp,username,action,target,result,ip,detail FROM audit_events ORDER BY id DESC LIMIT ?",
             (limit,)
@@ -1871,6 +2029,56 @@ def all_disk_usage():
     disks.sort(key=lambda d: d["mountpoint"])
     return disks
 
+
+def _swr_cache(ttl):
+    """Cache a no-argument function: instant within ttl; after ttl serve the old
+    value while one background thread refreshes; first call / after any logged
+    action (see _swr_invalidate_all) recompute now. Returns deep copies."""
+    import copy
+    def deco(fn):
+        st = {"v": None, "ts": 0.0, "inv": -1, "busy": False}
+        lock = threading.Lock()
+        def compute():
+            inv = _SWR_INV["n"]
+            v = fn()
+            st.update(v=v, ts=time.time(), inv=inv)
+            return v
+        def bg():
+            try:
+                with lock:
+                    compute()
+            except Exception:
+                pass
+            finally:
+                st["busy"] = False
+        def wrapper():
+            if st["ts"] == 0.0 or st["inv"] != _SWR_INV["n"]:
+                with lock:
+                    if st["ts"] == 0.0 or st["inv"] != _SWR_INV["n"]:
+                        return copy.deepcopy(compute())
+                return copy.deepcopy(st["v"])
+            if time.time() - st["ts"] > ttl and not st["busy"]:
+                st["busy"] = True
+                threading.Thread(target=bg, daemon=True, name="swr-refresh").start()
+            return copy.deepcopy(st["v"])
+        wrapper.__wrapped__ = fn
+        return wrapper
+    return deco
+
+_SWR_INV = {"n": 0}
+
+def _swr_invalidate_all():
+    _SWR_INV["n"] += 1
+
+
+@_swr_cache(30)
+def _npm_status_cached():
+    try:
+        wait_for_npm(timeout=5)
+        return "Online"
+    except Exception:
+        return "Unavailable"
+
 def host_stats():
     try:
         disk = psutil.disk_usage(str(BASE))
@@ -1878,12 +2086,7 @@ def host_stats():
         disk = psutil.disk_usage("/")
     disks = all_disk_usage()
     vm = psutil.virtual_memory()
-    npm = "Unavailable"
-    try:
-        wait_for_npm(timeout=5)
-        npm = "Online"
-    except Exception:
-        pass
+    npm = _npm_status_cached()
     net = psutil.net_io_counters()
     uptime_seconds = max(0, int(time.time() - psutil.boot_time()))
     days, rem = divmod(uptime_seconds, 86400)
@@ -1922,7 +2125,7 @@ def collect_host_metric():
     net = psutil.net_io_counters()
     cpu = psutil.cpu_percent(interval=0.2)
     ts = int(time.time())
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute(
             "INSERT INTO host_metrics(timestamp,cpu_percent,ram_percent,disk_percent,net_rx_bytes,net_tx_bytes) VALUES(?,?,?,?,?,?)",
             (ts, cpu, vm.percent, disk.percent, int(net.bytes_recv), int(net.bytes_sent))
@@ -1941,7 +2144,7 @@ def metrics_collector():
 
 def recent_host_metrics(hours=24, limit=1440):
     cutoff = int(time.time()) - int(hours * 3600)
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         rows = db.execute(
             "SELECT timestamp,cpu_percent,ram_percent,disk_percent,net_rx_bytes,net_tx_bytes "
             "FROM host_metrics WHERE timestamp>=? ORDER BY timestamp ASC LIMIT ?",
@@ -1972,7 +2175,7 @@ def container_live_stats(container_name):
 
 def login_locked(username, ip):
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S UTC")
-    with sqlite3.connect(AUTH_DB) as db:
+    with _sq_connect(AUTH_DB) as db:
         count = db.execute(
             "SELECT COUNT(*) FROM auth_events WHERE event='login' AND result='failed' AND timestamp>=? AND (username=? OR ip=?)",
             (cutoff, username, ip)
@@ -2003,10 +2206,11 @@ def npm_existing_proxy(domain):
     return None
 
 def npm_create_certificate(domain):
+    _names = [domain] if isinstance(domain, str) else [n for n in domain if n]
     payload = {
         "provider": "letsencrypt",
-        "nice_name": domain,
-        "domain_names": [domain],
+        "nice_name": _names[0],
+        "domain_names": _names,
         "meta": {
             "dns_challenge": False,
         },
@@ -2088,12 +2292,12 @@ def npm_create_proxy(site, domain, certificate_id=0, forward_host=None, forward_
         raise RuntimeError(f"Proxy-host creation failed: HTTP {r.status_code}: {r.text[:500]}")
     return r.json()
 
-def npm_attach_certificate(proxy, certificate_id):
+def npm_attach_certificate(proxy, certificate_id, domain_names=None):
     proxy_id = proxy.get("id")
     if not proxy_id:
         raise RuntimeError("NPM proxy object has no id.")
     payload = {
-        "domain_names": proxy.get("domain_names", []),
+        "domain_names": list(domain_names or proxy.get("domain_names", [])),
         "forward_scheme": proxy.get("forward_scheme", "http"),
         "forward_host": proxy.get("forward_host"),
         "forward_port": proxy.get("forward_port", 80),
@@ -2142,15 +2346,36 @@ def resolve_domain(domain):
     except Exception:
         return []
 
+def _www_alias(domain):
+    """www.example.com <-> example.com, but only if that name resolves (Let's Encrypt must reach it)."""
+    d = (domain or "").strip().lower().rstrip(".")
+    if not d or "." not in d or d.replace(".", "").isdigit():
+        return None
+    alt = d[4:] if d.startswith("www.") else "www." + d
+    if alt.count(".") < 1:
+        return None
+    return alt if resolve_domain(alt) else None
+
 def provision_proxy_ssl(site, domain, forward_host=None, forward_port=80):
     wait_for_npm()
     proxy = npm_create_proxy(site, domain, 0, forward_host=forward_host, forward_port=forward_port)
-    cert = npm_create_certificate(domain)
+    names = list(dict.fromkeys([domain] + list(proxy.get("domain_names") or [])))
+    alt = _www_alias(domain)
+    if alt and alt not in names:
+        names.append(alt)
+    try:
+        cert = npm_create_certificate(names)
+    except Exception as exc:
+        if len(names) == 1:
+            raise
+        print(f"[ssl] certificate for {', '.join(names)} failed ({exc}); retrying with {domain} only", flush=True)
+        names = [domain]
+        cert = npm_create_certificate(names)
     cert_id = cert.get("id")
     if not cert_id:
         raise RuntimeError("Let's Encrypt certificate was created without an id.")
-    proxy = npm_attach_certificate(proxy, cert_id)
-    return {"proxy_id": proxy.get("id"), "certificate_id": cert_id}
+    proxy = npm_attach_certificate(proxy, cert_id, names)
+    return {"proxy_id": proxy.get("id"), "certificate_id": cert_id, "domains": names}
 
 def phpmyadmin_container_name(site):
     return f"{site}-phpmyadmin"
@@ -2800,7 +3025,7 @@ def site_health(site, domain):
     meta = site_metadata(SITES / site) or {}
     stype = meta.get("type", "wordpress")
     needs_db = stype != "html_php" or meta.get("has_database", False)
-    probe = ["node","-e","process.exit(0)"] if stype == "payload" else ["php","-r","echo 'ok';"]
+    probe = ["node","-e","process.exit(0)"] if (stype == "payload" or meta.get("runtime") == "node") else ["php","-r","echo 'ok';"]
     try:
         wp = docker_client.containers.get(site_app_container_name(site, meta))
         wp.reload()
@@ -2911,7 +3136,7 @@ def health_email_monitor():
                 message = f"Container={h['container']}, DB={h['db']}, HTTPS={h['http']}"
                 now = datetime.now(timezone.utc).isoformat()
 
-                with sqlite3.connect(PLATFORM_DB) as db:
+                with _sq_connect(PLATFORM_DB) as db:
                     row = db.execute(
                         "SELECT unhealthy,last_message,failure_count FROM health_notification_state WHERE site=?",
                         (site,)
@@ -2944,7 +3169,7 @@ def health_email_monitor():
                             )
                             db.commit()
 
-                            if settings.get("enabled"):
+                            if settings.get("enabled") and LEGACY_HEALTH_EMAILS:
                                 ok, detail = send_alert_email(
                                     f"[WP Host] UNHEALTHY: {site}",
                                     (
@@ -2972,7 +3197,7 @@ def health_email_monitor():
                             )
                             db.commit()
 
-                            if settings.get("enabled") and settings.get("send_recovery", True):
+                            if settings.get("enabled") and settings.get("send_recovery", True) and LEGACY_HEALTH_EMAILS:
                                 ok, detail = send_alert_email(
                                     f"[WP Host] RECOVERED: {site}",
                                     (
@@ -3042,22 +3267,31 @@ def get_wp_page_slugs(site):
         pass
     return []
 
-def get_wp_admin_users(site):
+def get_wp_admin_users_checked(site):
+    """Administrator logins, or None when they could not be read reliably (container
+    stopped/restarting, PHP error, timeout). Only lines marked ADMIN| count, so PHP
+    notices printed by plugins can never be mistaken for user names."""
     try:
         c = docker_client.containers.get(f"{site}-wp")
         if c.status != "running":
-            return []
+            return None
         code = (
             "require '/var/www/html/wp-load.php'; "
-            "$u=get_users(['role'=>'administrator']); "
-            "foreach($u as $x){echo $x->user_login.\"\\n\";}"
+            "$u=get_users(['role'=>'administrator','fields'=>['user_login']]); "
+            "foreach($u as $x){echo \"ADMIN|\".$x->user_login.\"\\n\";} echo \"ADMIN-LIST-OK\\n\";"
         )
         ex = c.exec_run(["php", "-r", code])
-        if ex.exit_code == 0:
-            return sorted({x.strip() for x in ex.output.decode(errors="ignore").splitlines() if x.strip()})
+        if ex.exit_code != 0:
+            return None
+        lines = [x.strip() for x in ex.output.decode(errors="ignore").splitlines()]
+        if "ADMIN-LIST-OK" not in lines:
+            return None
+        return sorted({x[6:] for x in lines if x.startswith("ADMIN|") and len(x) > 6})
     except Exception:
-        pass
-    return []
+        return None
+
+def get_wp_admin_users(site):
+    return get_wp_admin_users_checked(site) or []
 
 def build_security_snapshot(site):
     root = SITES / site / "wordpress"
@@ -3084,7 +3318,7 @@ def set_security_baseline(site, username):
     if not snap:
         raise RuntimeError("WordPress filesystem not found.")
     now = datetime.now(timezone.utc).isoformat()
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("""
             INSERT INTO security_baselines(site,created_at,created_by,root_entries,file_hashes,admin_users,page_slugs)
             VALUES(?,?,?,?,?,?,?)
@@ -3106,7 +3340,7 @@ def set_security_baseline(site, username):
     return snap
 
 def load_security_baseline(site):
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         row = db.execute(
             "SELECT created_at,created_by,root_entries,file_hashes,admin_users,page_slugs "
             "FROM security_baselines WHERE site=?",
@@ -3123,6 +3357,20 @@ def load_security_baseline(site):
         "page_slugs": json.loads(row[5] or "[]"),
     }
 
+def security_should_email(severity, finding_type, evidence=""):
+    """Email only for new admins and suspicious files; everything else stays on the Alerts page."""
+    if finding_type not in SECURITY_EMAIL_TYPES or severity not in SECURITY_EMAIL_SEVERITIES:
+        return False
+    if finding_type == "unexpected_root_entry" and severity != "CRITICAL":
+        return False               # a plain unexpected folder/file: dashboard only
+    return True
+
+def _hours_since(iso):
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds() / 3600
+    except Exception:
+        return 10 ** 6
+
 def finding_key(finding_type, path, message):
     import hashlib
     raw = f"{finding_type}|{path or ''}|{message}".encode("utf-8")
@@ -3133,9 +3381,9 @@ def record_security_finding(site, severity, finding_type, path, message, evidenc
     now = datetime.now(timezone.utc).isoformat()
     created = False
 
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         row = db.execute(
-            "SELECT id,active,email_sent FROM security_findings WHERE site=? AND finding_key=?",
+            "SELECT id,active,email_sent,last_seen FROM security_findings WHERE site=? AND finding_key=?",
             (site, key)
         ).fetchone()
 
@@ -3147,8 +3395,10 @@ def record_security_finding(site, severity, finding_type, path, message, evidenc
                 (severity, finding_type, path, message, evidence, now, row[0])
             )
             if not was_active:
-                db.execute("UPDATE security_findings SET email_sent=0 WHERE id=?", (row[0],))
-                created = True
+                # A finding that flickers off and on between scans must not re-send its email.
+                if _hours_since(row[3]) >= SECURITY_REEMAIL_AFTER_HOURS:
+                    db.execute("UPDATE security_findings SET email_sent=0 WHERE id=?", (row[0],))
+                    created = True
             finding_id = row[0]
         else:
             cur = db.execute("""
@@ -3161,36 +3411,14 @@ def record_security_finding(site, severity, finding_type, path, message, evidenc
             created = True
         db.commit()
 
-    if created and severity in SECURITY_EMAIL_SEVERITIES:
-        settings = load_email_settings()
-        if settings.get("enabled"):
-            subject = f"[WP Host Security] {severity}: {site}"
-            body = (
-                "WordPress Host security alert\n\n"
-                f"Site: {site}\n"
-                f"Severity: {severity}\n"
-                f"Finding: {finding_type}\n"
-                f"Path: {path or '-'}\n"
-                f"Message: {message}\n"
-                f"Evidence: {evidence or '-'}\n"
-                f"Time: {now}\n"
-            )
-            ok, detail = send_alert_email(subject, body, settings)
-            with sqlite3.connect(PLATFORM_DB) as db:
-                db.execute(
-                    "UPDATE security_findings SET email_sent=? WHERE id=?",
-                    (1 if ok else 0, finding_id)
-                )
-                db.commit()
-            try:
-                log_action("security_alert_email", site, "success" if ok else "failed", detail)
-            except Exception:
-                pass
+    if created and security_should_email(severity, finding_type, evidence):
+        queue_alert("security", site, severity, f"{message}",
+                    f"Finding: {finding_type}\nPath: {path or '-'}\nEvidence: {evidence or '-'}", finding_id)
 
     return key
 
 def resolve_missing_findings(site, seen_keys):
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         rows = db.execute(
             "SELECT id,finding_key FROM security_findings WHERE site=? AND active=1",
             (site,)
@@ -3214,8 +3442,15 @@ def resolve_missing_findings(site, seen_keys):
 # executable code at all (comments, exit/die/return). Anything with real code
 # must be reviewed and removed over SFTP.
 # ---------------------------------------------------------------------------
-SECURITY_ACK_MAX_BYTES = 4096
+SECURITY_ACK_MAX_BYTES = 4096                      # placeholders: accepted by exact content
+SECURITY_ACK_DATA_MAX_BYTES = 2 * 1024 * 1024      # die()-guarded data files: accepted by structure
 _ACK_PLACEHOLDER_RESIDUE = {"", "exit;", "die;", "return;", "exit();", "die();", "exit(0);", "die(0);"}
+# A data file protected by a die() guard (BackupBuddy and others store settings this way): the ONLY PHP is a block
+# that stops the script at once - die/exit with at most a plain quoted message, no variables - and everything after
+# it is plain base64 text. Nothing in such a file can run, however its data changes.
+_ACK_DIE_GUARD = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?\s*<\?php\s+(?:die|exit)\s*(?:\(\s*(?:'[^'\\\r\n]*'|\"[^\"\\\r\n$]*\")?\s*\))?\s*;\s*(?://[^\r\n]*?)?\s*\?>", re.I)
+_ACK_DATA_BODY = re.compile(rb"[A-Za-z0-9+/=\s]*")
 _ACK_SUSPICIOUS = re.compile(
     r"eval\s*\(|assert\s*\(|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|shell_exec|passthru|"
     r"\bsystem\s*\(|\bexec\s*\(|popen|proc_open|pcntl_exec|create_function|call_user_func|preg_replace|"
@@ -3225,7 +3460,7 @@ _ACK_SUSPICIOUS = re.compile(
 
 
 def _ack_ensure():
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS security_acknowledged_php (
                 site TEXT NOT NULL,
@@ -3235,41 +3470,60 @@ def _ack_ensure():
                 preview TEXT,
                 acknowledged_by TEXT,
                 acknowledged_at TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'content',
                 PRIMARY KEY (site, sha256)
             )
         """)
+        if "kind" not in {r[1] for r in db.execute("PRAGMA table_info(security_acknowledged_php)").fetchall()}:
+            db.execute("ALTER TABLE security_acknowledged_php ADD COLUMN kind TEXT NOT NULL DEFAULT 'content'")
         db.commit()
+
+
+def guarded_data_file(data):
+    """True for a die()-guarded base64 data file (see _ACK_DIE_GUARD). `data` must be the COMPLETE file."""
+    m = _ACK_DIE_GUARD.match(data)
+    if not m:
+        return False
+    rest = data[m.end():]
+    if b"<?" in rest or re.search(rb"<script[^>]*language\s*=\s*[\"']?php", rest, re.I):
+        return False
+    return _ACK_DATA_BODY.fullmatch(rest) is not None
 
 
 _ACK_STRUCTURAL_TAGS = re.compile(r"</?(?:!doctype[^>]*|html|head|body)\s*>", re.I)
 _ACK_ACTIVE_TAGS = re.compile(r"<\s*(script|iframe|frame|form|a|img|object|embed|link|meta|style|svg|video|audio|input|base)\b", re.I)
 
 
-def classify_uploads_php(data):
-    """Describe a .php file found in uploads. can_ack is True only for harmless placeholders:
-    (a) PHP whose code is empty (comments, exit/die/return), or (b) a file with NO PHP tags whose markup is
-    empty (e.g. <html></html>). A file with no PHP tags runs nothing - but if it has real content it would
-    serve that content from your domain (phishing / spam pages), so it is not accepted."""
-    size = len(data)
+def classify_uploads_php(data, total_size=None):
+    """Describe a .php file found in uploads. `data` is the file (or its first bytes) and total_size its REAL size.
+    can_ack is True only for things that cannot run anything: (a) a die()-guarded base64 data file (accepted by
+    structure), (b) PHP whose code is empty, or (c) a file with NO PHP tags whose markup is empty (exact content)."""
+    size = len(data) if total_size is None else total_size
+    if len(data) == size and size <= SECURITY_ACK_DATA_MAX_BYTES and guarded_data_file(data):
+        return dict(size=size, kind="data", placeholder=False, suspicious=[], can_ack=True,
+                    verdict="Looks like a data file protected by a die() guard - the kind plugins such as BackupBuddy use to store settings. "
+                            "Its only PHP is a line that stops the script immediately, and everything after it is plain base64 text, so nothing in it can run. "
+                            "It is accepted by its structure rather than its exact content, because plugins rewrite these files.")
+    if size > SECURITY_ACK_MAX_BYTES:
+        return dict(size=size, kind=None, placeholder=False, suspicious=[], can_ack=False,
+                    verdict=f"This file is {size} bytes - too large to review here (placeholders are limited to {SECURITY_ACK_MAX_BYTES} bytes) and it is not a "
+                            "die()-guarded data file. Review it over SFTP and delete it if it isn't needed.")
     text = data.decode("utf-8", "replace")
     suspicious = sorted({m.group(0).strip().lower() for m in _ACK_SUSPICIOUS.finditer(text)})
-    if size > SECURITY_ACK_MAX_BYTES:
-        return dict(size=size, placeholder=False, suspicious=suspicious, can_ack=False,
-                    verdict=f"Too large to acknowledge here ({size} bytes; limit {SECURITY_ACK_MAX_BYTES}). Review it over SFTP and delete it if it isn't needed.")
     has_php = "<?" in text or re.search(r"<script[^>]*language\s*=\s*[\"']?php", text, re.I) is not None
     if not has_php:
         markup = re.sub(r"<!--.*?-->", "", text, flags=re.S)
         markup = _ACK_STRUCTURAL_TAGS.sub("", markup)
         residue = re.sub(r"\s+", "", markup).lower()
         if residue in ("", "silenceisgolden", "silenceisgolden.") and not suspicious:
-            return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=True,
+            return dict(size=size, kind="placeholder", placeholder=True, suspicious=suspicious, can_ack=True,
                         verdict="Contains no PHP code at all - just empty HTML. The server sends it as-is, so nothing can run.")
         if residue in ("", "silenceisgolden", "silenceisgolden."):
-            return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=False,
+            return dict(size=size, kind=None, placeholder=True, suspicious=suspicious, can_ack=False,
                         verdict="Contains no PHP code, but it mentions " + ", ".join(suspicious[:6]) + ", so check it by hand over SFTP before trusting it.")
         active = sorted({m.group(1).lower() for m in _ACK_ACTIVE_TAGS.finditer(text)})
         what = ("it contains " + ", ".join("<" + a + ">" for a in active[:5])) if active else "it contains visible content"
-        return dict(size=size, placeholder=False, suspicious=suspicious, can_ack=False,
+        return dict(size=size, kind=None, placeholder=False, suspicious=suspicious, can_ack=False,
                     verdict=f"Contains no PHP code, but it is not an empty placeholder ({what}). It would serve that content from your domain, "
                             "which is how phishing and spam pages are planted. Review it over SFTP and delete it if it isn't needed.")
     # PHP present: PHP ends a // or # comment at a newline, a lone carriage return, OR at "?>" - so a comment must
@@ -3280,14 +3534,14 @@ def classify_uploads_php(data):
     residue = re.sub(r"\s+", "", code).lower()
     placeholder = residue in _ACK_PLACEHOLDER_RESIDUE
     if placeholder and not suspicious:
-        return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=True,
+        return dict(size=size, kind="placeholder", placeholder=True, suspicious=suspicious, can_ack=True,
                     verdict="Looks like a harmless placeholder: it contains no executable code.")
     if placeholder:
-        return dict(size=size, placeholder=True, suspicious=suspicious, can_ack=False,
+        return dict(size=size, kind=None, placeholder=True, suspicious=suspicious, can_ack=False,
                     verdict="Looks like a placeholder, but it mentions " + ", ".join(suspicious[:6]) +
                             " (even inside a comment), so check it by hand over SFTP before trusting it.")
     note = (" It uses: " + ", ".join(suspicious[:6]) + ".") if suspicious else ""
-    return dict(size=size, placeholder=False, suspicious=suspicious, can_ack=False,
+    return dict(size=size, kind=None, placeholder=False, suspicious=suspicious, can_ack=False,
                 verdict="Contains executable PHP code, so it cannot be acknowledged here." + note +
                         " Review it over SFTP and delete it if it isn't needed.")
 
@@ -3314,43 +3568,55 @@ def uploads_php_file(site, rel):
 
 
 def acknowledged_php_hashes(site):
-    """({sha256: (first_path, when)}, {first_path: (sha256, when)}) for a site."""
+    """({key: (first_path, when, kind)}, {first_path: (key, when, kind)}) for a site. kind is 'content' (key = SHA-256 of
+    the exact content) or 'data' (a die()-guarded data file; key = SHA-256 of the path - accepted by structure)."""
     _ack_ensure()
-    with sqlite3.connect(PLATFORM_DB) as db:
-        rows = db.execute("SELECT sha256,first_path,acknowledged_at FROM security_acknowledged_php WHERE site=?", (site,)).fetchall()
-    return {r[0]: (r[1], r[2]) for r in rows}, {r[1]: (r[0], r[2]) for r in rows}
+    with _sq_connect(PLATFORM_DB) as db:
+        rows = db.execute("SELECT sha256,first_path,acknowledged_at,kind FROM security_acknowledged_php WHERE site=?", (site,)).fetchall()
+    return {r[0]: (r[1], r[2], r[3]) for r in rows}, {r[1]: (r[0], r[2], r[3]) for r in rows}
+
+
+def _ack_read(path):
+    with open(path, "rb") as f:
+        return f.read(SECURITY_ACK_DATA_MAX_BYTES + 1)
 
 
 def php_preview(site, rel):
     try:
         p = uploads_php_file(site, rel)
-        with open(p, "rb") as f:
-            data = f.read(SECURITY_ACK_MAX_BYTES + 1)
-        info = classify_uploads_php(data)
-        info["size"] = p.stat().st_size
-        info["text"] = data[:600].decode("utf-8", "replace") + (" ..." if len(data) > 600 else "")
+        data = _ack_read(p)
+        size = p.stat().st_size
+        info = classify_uploads_php(data, size)
+        info["size"] = size
+        info["text"] = data[:600].decode("utf-8", "replace") + (" ..." if size > 600 else "")
         return info
     except Exception as exc:
-        return dict(size=0, text="", placeholder=False, suspicious=[], can_ack=False, verdict=f"Cannot read this file: {exc}.")
+        return dict(size=0, text="", kind=None, placeholder=False, suspicious=[], can_ack=False, verdict=f"Cannot read this file: {exc}.")
 
 
 def build_php_previews(findings):
     out = {}
-    for f in [x for x in findings if x["finding_type"] == "php_in_uploads"][:40]:
+    for f in [x for x in findings if x["finding_type"] == "php_in_uploads"][:25]:
         out[f["id"]] = php_preview(f["site"], f["path"])
     return out
 
 
-def _ack_close_matching_findings(site, sha):
-    """Resolve every open php_in_uploads finding on this site whose file has exactly this content."""
+def _ack_close_matching_findings(site, kind, key, rel):
+    """Resolve open php_in_uploads findings covered by this acknowledgement: for exact content, every file with that
+    content; for a data file, that path (re-checked against the structure)."""
     import hashlib
     closed = 0
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         rows = db.execute("SELECT id,path FROM security_findings WHERE site=? AND active=1 AND finding_type='php_in_uploads'", (site,)).fetchall()
-        for fid, rel in rows:
+        for fid, frel in rows:
             try:
-                p = uploads_php_file(site, rel)
-                if p.stat().st_size <= SECURITY_ACK_MAX_BYTES and hashlib.sha256(p.read_bytes()).hexdigest() == sha:
+                p = uploads_php_file(site, frel)
+                size = p.stat().st_size
+                if kind == "data":
+                    hit = (frel == rel and size <= SECURITY_ACK_DATA_MAX_BYTES and guarded_data_file(p.read_bytes()))
+                else:
+                    hit = (size <= SECURITY_ACK_MAX_BYTES and hashlib.sha256(p.read_bytes()).hexdigest() == key)
+                if hit:
                     db.execute("UPDATE security_findings SET active=0 WHERE id=?", (fid,))
                     closed += 1
             except Exception:
@@ -3362,46 +3628,52 @@ def _ack_close_matching_findings(site, sha):
 def acknowledge_php_file(site, rel, username):
     import hashlib
     p = uploads_php_file(site, rel)
-    with open(p, "rb") as f:
-        data = f.read(SECURITY_ACK_MAX_BYTES + 1)
-    info = classify_uploads_php(data)
+    size = p.stat().st_size
+    data = _ack_read(p)
+    info = classify_uploads_php(data, size)
     if not info["can_ack"]:
         raise ValueError(info["verdict"])
-    sha = hashlib.sha256(data).hexdigest()
+    kind = info["kind"] if info["kind"] == "data" else "content"
+    key = hashlib.sha256(("guard:" + rel).encode()).hexdigest() if kind == "data" else hashlib.sha256(data).hexdigest()
     _ack_ensure()
-    with sqlite3.connect(PLATFORM_DB) as db:
-        db.execute("INSERT OR IGNORE INTO security_acknowledged_php(site,sha256,first_path,size,preview,acknowledged_by,acknowledged_at) VALUES(?,?,?,?,?,?,?)",
-                   (site, sha, rel, len(data), data[:300].decode("utf-8", "replace"), username, datetime.now(timezone.utc).isoformat()))
+    with _sq_connect(PLATFORM_DB) as db:
+        db.execute("INSERT OR IGNORE INTO security_acknowledged_php(site,sha256,first_path,size,preview,acknowledged_by,acknowledged_at,kind) VALUES(?,?,?,?,?,?,?,?)",
+                   (site, key, rel, size, data[:300].decode("utf-8", "replace"), username, datetime.now(timezone.utc).isoformat(), kind))
         db.commit()
-    return sha, len(data), _ack_close_matching_findings(site, sha)
+    return key, size, _ack_close_matching_findings(site, kind, key, rel), kind
 
 
 def list_acknowledged_php():
     _ack_ensure()
-    with sqlite3.connect(PLATFORM_DB) as db:
-        rows = db.execute("SELECT site,sha256,first_path,size,preview,acknowledged_by,acknowledged_at FROM security_acknowledged_php ORDER BY site, acknowledged_at DESC").fetchall()
-    return [dict(site=r[0], sha256=r[1], path=r[2], size=r[3], preview=(r[4] or "").strip()[:120], by=r[5] or "-", at=format_adelaide(r[6])) for r in rows]
+    with _sq_connect(PLATFORM_DB) as db:
+        rows = db.execute("SELECT site,sha256,first_path,size,preview,acknowledged_by,acknowledged_at,kind FROM security_acknowledged_php ORDER BY site, acknowledged_at DESC").fetchall()
+    return [dict(site=r[0], sha256=r[1], path=r[2], size=r[3], preview=(r[4] or "").strip()[:120], by=r[5] or "-", at=format_adelaide(r[6]), kind=r[7],
+                 kind_label=("protected data file (accepted by structure)" if r[7] == "data" else "exact content")) for r in rows]
 
 
 @APP.post("/alerts/acknowledge-file/<int:finding_id>")
 @alerts_required
 def alerts_acknowledge_file(finding_id):
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         row = db.execute("SELECT site,finding_type,path FROM security_findings WHERE id=? AND active=1", (finding_id,)).fetchone()
     if not row or row[1] != "php_in_uploads":
         flash("That alert can't be acknowledged (it is gone, or isn't a PHP-in-uploads alert).")
         return redirect(url_for("alerts_page"))
     site, _, rel = row
     try:
-        sha, size, closed = acknowledge_php_file(site, rel, session.get("username", "-"))
+        key, size, closed, kind = acknowledge_php_file(site, rel, session.get("username", "-"))
     except ValueError as exc:
         log_action("security_ack_php", site, "failed", f"{rel}: {str(exc)[:200]}")
         flash(f"{site}: not acknowledged - {exc}")
         return redirect(url_for("alerts_page"))
-    log_action("security_ack_php", site, "success", f"{rel} sha256={sha[:16]} size={size}")
-    flash(f"{site}: acknowledged and added to the baseline - {rel}. "
-          f"{closed} matching alert(s) resolved. Any file with exactly this content is now accepted on this site; "
-          "if its content ever changes it will alert again.")
+    log_action("security_ack_php", site, "success", f"{rel} kind={kind} key={key[:16]} size={size}")
+    if kind == "data":
+        flash(f"{site}: acknowledged and added to the baseline - {rel} (a die()-guarded data file). {closed} matching alert(s) resolved. "
+              "It is accepted by its structure, because plugins rewrite these files; it will alert again if anything executable is ever added to it.")
+    else:
+        flash(f"{site}: acknowledged and added to the baseline - {rel}. "
+              f"{closed} matching alert(s) resolved. Any file with exactly this content is now accepted on this site; "
+              "if its content ever changes it will alert again.")
     return redirect(url_for("alerts_page"))
 
 
@@ -3411,15 +3683,94 @@ def alerts_acknowledged_remove(site, sha):
     if not SITE_RE.match(site) or not re.fullmatch(r"[0-9a-f]{64}", sha):
         abort(404)
     _ack_ensure()
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         cur = db.execute("DELETE FROM security_acknowledged_php WHERE site=? AND sha256=?", (site, sha))
         db.commit()
     if cur.rowcount:
-        log_action("security_ack_php_remove", site, "success", f"sha256={sha[:16]}")
+        log_action("security_ack_php_remove", site, "success", f"key={sha[:16]}")
         flash(f"{site}: acknowledgement removed. That file will be flagged again at the next scan.")
     else:
         flash("That acknowledgement no longer exists.")
     return redirect(url_for("alerts_page"))
+
+
+
+# --- PHP files that are only a returned array literal (font metrics etc.) cannot run code ---
+PURE_DATA_MAX_BYTES = 4 * 1024 * 1024
+_PURE_HEADER = re.compile(rb"\A(?:\xef\xbb\xbf)?<\?php\s+return\s+", re.I)
+_PURE_TAIL = re.compile(rb";\s*(?:\?>\s*)?\Z")
+_PURE_TOKENS = [re.compile(x, re.I) for x in (
+    rb"\s+", rb"array(?![A-Za-z0-9_])", rb"[()\[\],]", rb"=>", rb"[-+]",
+    rb"(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?", rb"(?:true|false|null)(?![A-Za-z0-9_])",
+    rb"'(?:[^'\\]|\\.)*'", rb'"(?:[^"\\$]|\\[^$])*"',
+    rb"\.(?![0-9])", rb"(?:DOMPDF_FONT_DIR|DOMPDF_DIR)(?![A-Za-z0-9_])(?!\s*\()",   # dompdf font-cache paths: constant . 'name'
+)]
+_PURE_CACHE = {}
+
+def pure_php_data_file(data):
+    """True only when the whole file is `<?php return <array literal>;` and nothing else."""
+    if len(data) > PURE_DATA_MAX_BYTES:
+        return False
+    h = _PURE_HEADER.match(data)
+    if not h:
+        return False
+    body = data[h.end():]
+    t = _PURE_TAIL.search(body)
+    if not t:
+        return False
+    core = body[:t.start()]
+    if not re.match(rb"\s*(?:array\s*\(|\[)", core, re.I):
+        return False
+    pos, n = 0, len(core)
+    while pos < n:                       # one token at a time: no regex backtracking across tokens
+        for rx in _PURE_TOKENS:
+            m = rx.match(core, pos)
+            if m and m.end() > pos:
+                pos = m.end()
+                break
+        else:
+            return False
+    return True
+
+def pure_php_data_file_cached(path, size):
+    try:
+        key = (str(path), size, path.stat().st_mtime_ns)
+        if key in _PURE_CACHE:
+            return _PURE_CACHE[key]
+        ok = pure_php_data_file(path.read_bytes())
+        if len(_PURE_CACHE) > 5000:
+            _PURE_CACHE.clear()
+        _PURE_CACHE[key] = ok
+        return ok
+    except OSError:
+        return False
+
+
+
+# --- files proven to contain no executable code, and exact-content known-good plugin placeholders ---
+KNOWN_BENIGN_UPLOAD_PHP_SHA256 = {
+    "76e7cd6781911a19d14c02f36b30ef35ebf891c9bcff7bdce70b366f66d06c6f": "WPForms cache/index.php (sends a 404 header)",
+}
+_HARMLESS_CACHE = {}
+
+def harmless_upload_php(data):
+    if hashlib.sha256(data).hexdigest() in KNOWN_BENIGN_UPLOAD_PHP_SHA256:
+        return True
+    c = classify_uploads_php(data, len(data))
+    return bool(c.get("can_ack")) and c.get("kind") in ("placeholder", "data")
+
+def harmless_upload_php_cached(path, size):
+    try:
+        key = (str(path), size, path.stat().st_mtime_ns)
+        if key in _HARMLESS_CACHE:
+            return _HARMLESS_CACHE[key]
+        ok = harmless_upload_php(path.read_bytes())
+        if len(_HARMLESS_CACHE) > 5000:
+            _HARMLESS_CACHE.clear()
+        _HARMLESS_CACHE[key] = ok
+        return ok
+    except OSError:
+        return False
 
 
 def suspicious_php_in_uploads(root, site=None):
@@ -3432,21 +3783,37 @@ def suspicious_php_in_uploads(root, site=None):
         try:
             rel = str(p.relative_to(root))
             size = p.stat().st_size
-            if (by_hash or by_path) and size <= SECURITY_ACK_MAX_BYTES and not p.is_symlink():
+            if not p.is_symlink() and size <= PURE_DATA_MAX_BYTES and pure_php_data_file_cached(p, size):
+                continue
+            if not p.is_symlink() and size <= SECURITY_ACK_DATA_MAX_BYTES and harmless_upload_php_cached(p, size):
+                continue
+            if (by_hash or by_path) and not p.is_symlink():
                 import hashlib
-                sha = hashlib.sha256(p.read_bytes()).hexdigest()
-                if sha in by_hash:
-                    continue
-                if rel in by_path:
+                row = by_path.get(rel)
+                if size <= SECURITY_ACK_DATA_MAX_BYTES:
+                    data = p.read_bytes()
+                    hit = by_hash.get(hashlib.sha256(data).hexdigest())
+                    if hit and hit[2] == "content" and size <= SECURITY_ACK_MAX_BYTES:
+                        continue
+                    if row and row[2] == "data":
+                        if guarded_data_file(data):
+                            continue
+                        findings.append(("CRITICAL", "php_in_uploads", rel,
+                                         "Acknowledged data file in uploads no longer looks harmless",
+                                         f"size={size}; it no longer matches the die()-guarded data pattern acknowledged on {row[1][:10]} - something executable may have been added"))
+                        continue
+                    if row and row[2] == "content":
+                        findings.append(("CRITICAL", "php_in_uploads", rel,
+                                         "Acknowledged PHP file in uploads has CHANGED",
+                                         (f"size={size}; its content differs from the version acknowledged on {row[1][:10]}" if size <= SECURITY_ACK_MAX_BYTES
+                                          else f"size={size}; it is no longer the small placeholder acknowledged on {row[1][:10]}")))
+                        continue
+                elif row:
                     findings.append(("CRITICAL", "php_in_uploads", rel,
                                      "Acknowledged PHP file in uploads has CHANGED",
-                                     f"size={size}; its content differs from the version acknowledged on {by_path[rel][1][:10]}"))
+                                     f"size={size}; it is no longer the small placeholder acknowledged on {row[1][:10]}" if row[2] == "content"
+                                     else f"size={size}; it has grown far beyond the size accepted for a data file"))
                     continue
-            elif by_path and rel in by_path:
-                findings.append(("CRITICAL", "php_in_uploads", rel,
-                                 "Acknowledged PHP file in uploads has CHANGED",
-                                 f"size={size}; it is no longer the small placeholder acknowledged on {by_path[rel][1][:10]}"))
-                continue
             findings.append(("CRITICAL", "php_in_uploads", rel,
                              "PHP file detected inside wp-content/uploads",
                              f"size={size}"))
@@ -3519,9 +3886,22 @@ def new_admin_users(site, baseline):
     findings = []
     if not baseline:
         return findings
+    current_list = get_wp_admin_users_checked(site)
+    if current_list is None:
+        return findings            # could not read the list: say nothing rather than guess
     old = set(baseline.get("admin_users", []))
-    current = set(get_wp_admin_users(site))
-    for username in sorted(current - old):
+    if not old:
+        # The baseline was taken while the admin list was unreadable. Learn it now (quietly)
+        # instead of reporting every existing administrator as new.
+        try:
+            with _sq_connect(PLATFORM_DB) as db:
+                db.execute("UPDATE security_baselines SET admin_users=? WHERE site=?",
+                           (json.dumps(current_list), site))
+                db.commit()
+        except Exception:
+            pass
+        return findings
+    for username in sorted(set(current_list) - old):
         findings.append(("CRITICAL", "new_admin_user", f"user:{username}",
                          "New WordPress administrator detected",
                          f"Administrator '{username}' was not present in baseline."))
@@ -3568,8 +3948,10 @@ def scan_site_security(site):
     findings.extend(changed_sensitive_files(root, baseline))
     findings.extend(new_admin_users(site, baseline))
     ok, detail = wordpress_core_checksum(site)
-    if not ok:
-        findings.append(("CRITICAL","wordpress_core_checksum","/var/www/html","WordPress official core checksum verification failed",detail))
+    _real, _ignored = core_checksum_problems(detail)
+    if not ok and _real:
+        findings.append(("HIGH","wordpress_core_checksum","/var/www/html","WordPress core files differ from the official release",
+                         "\n".join(_real[:20]) + (f"\n(+{len(_real)-20} more)" if len(_real) > 20 else "")))
     meta = site_metadata(SITES / site)
     domain = meta.get("domain", "")
     suspicious_paths = [
@@ -3599,6 +3981,8 @@ def security_scan_all():
             results[d.name] = [("MEDIUM", "scan_error", "", "Security scan failed", str(exc))]
     return results
 
+_SCAN_STATE = {"last": 0.0}
+
 def security_scanner_loop():
     while True:
         try:
@@ -3608,32 +3992,65 @@ def security_scanner_loop():
                 log_action("security_scan", "system", "failed", str(exc))
             except Exception:
                 pass
-        time.sleep(max(1, SECURITY_SCAN_INTERVAL_MINUTES) * 60)
+        _SCAN_STATE["last"] = time.time()
+        _t0 = time.time()
+        while time.time() - _t0 < max(1, SECURITY_SCAN_INTERVAL_MINUTES) * 60:
+            time.sleep(20)
 
 def get_site_ops(site):
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("INSERT OR IGNORE INTO site_operations(site) VALUES(?)",(site,)); db.commit()
         r=db.execute("SELECT mode,notes,owner_name,owner_email,owner_phone,external_url,last_external_status,last_external_ms,last_external_check FROM site_operations WHERE site=?",(site,)).fetchone()
     return dict(zip(["mode","notes","owner_name","owner_email","owner_phone","external_url","last_external_status","last_external_ms","last_external_check"],r))
 
 def host_policy():
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         r=db.execute("SELECT disk_warn,disk_high,disk_critical,external_check_minutes,restart_alert_delta FROM host_policy WHERE id=1").fetchone()
     return dict(zip(["disk_warn","disk_high","disk_critical","external_check_minutes","restart_alert_delta"],r))
+
+
+_CS_IGNORE = re.compile(r"(?:^|/)(?:error_log|php_errorlog|\.maintenance|\.DS_Store)$")
+
+def core_checksum_problems(out):
+    """(real_problem_lines, ignored_count) from `wp core verify-checksums` output. Stray PHP error logs
+    left inside WordPress folders are ignored; they are clean-up, not tampering."""
+    real, ignored = [], 0
+    for line in (out or "").splitlines():
+        m = re.match(r"\s*Warning:\s*File (doesn't verify against checksum|should not exist|doesn't exist|is missing)\s*:?\s*(.*)$", line)
+        if not m:
+            continue
+        if m.group(1) == "should not exist" and _CS_IGNORE.search(m.group(2).strip()):
+            ignored += 1
+            continue
+        real.append(line.strip())
+    return real, ignored
+
 
 def wordpress_core_checksum(site):
     try:
         c=docker_client.containers.get(f"{site}-wp")
         cmd=["sh","-lc","curl -fsSL -o /tmp/wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && php /tmp/wp-cli.phar core verify-checksums --allow-root --path=/var/www/html"]
-        ex=c.exec_run(cmd); return ex.exit_code==0,ex.output.decode(errors="ignore")[-4000:]
+        ex=c.exec_run(cmd, _timeout=900); out=ex.output.decode(errors="ignore")[-60000:]; real,ignored=core_checksum_problems(out); return (ex.exit_code==0 or (ignored>0 and not real)),out
     except Exception as e:return False,str(e)
 
 def plugin_theme_inventory(site):
+    """Lines: PLUGIN|file|version|title|active(1/0), THEME|slug|version|title, then INVENTORY-OK.
+    (The old version wrote a literal backslash-n instead of a newline, so every plugin ended up on
+    one line and only the first was ever listed.)"""
     try:
-        c=docker_client.containers.get(f"{site}-wp")
-        code="require '/var/www/html/wp-load.php';require_once ABSPATH.'wp-admin/includes/plugin.php';$p=get_plugins();foreach($p as $k=>$v){echo 'PLUGIN|'.$k.'|'.($v['Version']??'').'\\n';}$ts=wp_get_themes();foreach($ts as $k=>$v){echo 'THEME|'.$k.'|'.$v->get('Version').'\\n';}"
-        return c.exec_run(["php","-r",code]).output.decode(errors="ignore")
-    except Exception as e:return str(e)
+        c = docker_client.containers.get(f"{site}-wp")
+        code = (
+            "require '/var/www/html/wp-load.php'; require_once ABSPATH.'wp-admin/includes/plugin.php'; "
+            "$act=(array)get_option('active_plugins',[]); $p=get_plugins(); "
+            "foreach($p as $k=>$v){echo \"PLUGIN|\".$k.\"|\".($v['Version']??'').\"|\".str_replace('|','/',(string)($v['Name']??$k)).\"|\".((in_array($k,$act,true)||is_plugin_active($k))?1:0).\"\\n\";} "
+            "$ts=wp_get_themes(); "
+            "foreach($ts as $k=>$v){echo \"THEME|\".$k.\"|\".$v->get('Version').\"|\".str_replace('|','/',(string)$v->get('Name')).\"\\n\";} "
+            "echo \"INVENTORY-OK\\n\";"
+        )
+        ex = c.exec_run(["php", "-r", code])
+        return ex.output.decode(errors="ignore")
+    except Exception as e:
+        return str(e)
 
 WORDFENCE_FEED_URL = "https://www.wordfence.com/api/intelligence/v2/vulnerabilities/production"
 WORDFENCE_FEED_CACHE_FILE = BASE / "wordfence-feed-cache.json"
@@ -3894,7 +4311,7 @@ def operational_monitor_loop():
                 for suffix in ("wp","db"):
                     try:
                         c=docker_client.containers.get(f"{site}-{suffix}"); count=int(c.attrs.get("RestartCount",0))
-                        with sqlite3.connect(PLATFORM_DB) as db:
+                        with _sq_connect(PLATFORM_DB) as db:
                             db.execute("INSERT OR IGNORE INTO site_operations(site) VALUES(?)",(site,))
                             old=db.execute("SELECT last_restart_seen FROM site_operations WHERE site=?",(site,)).fetchone()[0]
                             if count-old>=p["restart_alert_delta"]: record_security_finding(site,"HIGH","container_restart_anomaly",c.name,"Container restart anomaly",f"Restart count {old} -> {count}")
@@ -3906,18 +4323,1040 @@ def operational_monitor_loop():
                     status="DOWN"; ms=None
                     try:
                         st=_time.monotonic(); rr=requests.get(url,timeout=15,allow_redirects=True); ms=int((_time.monotonic()-st)*1000); status="UP" if rr.status_code<500 else f"HTTP {rr.status_code}"
-                        if status!="UP": record_security_finding(site,"HIGH","external_uptime",url,"External uptime check failed",status)
-                    except Exception as e: record_security_finding(site,"HIGH","external_uptime",url,"External uptime check failed",str(e))
-                    with sqlite3.connect(PLATFORM_DB) as db:
+                    except Exception as e: status="DOWN"
+                    with _sq_connect(PLATFORM_DB) as db:
                         db.execute("UPDATE site_operations SET external_url=?,last_external_status=?,last_external_ms=?,last_external_check=? WHERE site=?",(url,status,ms,datetime.now(timezone.utc).isoformat(),site));db.commit()
         except Exception as e:
             try: log_action("operational_monitor","system","failed",str(e))
             except Exception: pass
         time.sleep(max(1,int(host_policy()["external_check_minutes"]))*60)
 
+
+# ---------------------------------------------------------------------------
+# Down detector: checks every site's public URL, emails when one is confirmed down
+# (default: 3 failed checks in a row, 60 s apart) and when it recovers, and keeps a
+# history of incidents. A site must have answered once before it can be reported down,
+# so a brand-new site whose DNS is not pointed yet never sends an alert. Set
+# "monitoring": false in a site's site.json to exclude it (e.g. while rebuilding).
+# ---------------------------------------------------------------------------
+def _uptime_ensure():
+    with _sq_connect(PLATFORM_DB) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS uptime_state (
+            site TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'up', fails INTEGER NOT NULL DEFAULT 0,
+            ever_up INTEGER NOT NULL DEFAULT 0, first_fail TEXT, since TEXT, last_check TEXT,
+            last_ms INTEGER, last_reason TEXT, last_email TEXT, incident_id INTEGER)""")
+        db.execute("""CREATE TABLE IF NOT EXISTS uptime_incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, site TEXT NOT NULL, started TEXT NOT NULL,
+            ended TEXT, reason TEXT)""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_uptime_incidents_site ON uptime_incidents(site,started)")
+        db.commit()
+
+def uptime_probe(url):
+    """One public check. Down = no answer, TLS failure or HTTP 5xx. 401/403/404 mean the site is up."""
+    headers = {"User-Agent": "WPHost-Uptime/1.0"}
+    reason = ""
+    for attempt in (1, 2):
+        t0 = time.monotonic()
+        try:
+            r = requests.get(url, timeout=15, allow_redirects=True, headers=headers)
+            ms = int((time.monotonic() - t0) * 1000)
+            if r.status_code < 500:
+                return True, ms, f"HTTP {r.status_code}"
+            reason = f"HTTP {r.status_code}"
+        except requests.exceptions.SSLError as exc:
+            reason = "TLS/certificate error: " + str(exc)[:140]
+        except requests.exceptions.Timeout:
+            reason = "no response within 15 seconds"
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {str(exc)[:140]}"
+        if attempt == 1:
+            time.sleep(3)          # one quick retry so a single dropped packet is not a failure
+    return False, None, reason
+
+def _uptime_fmt_duration(seconds):
+    seconds = int(max(0, seconds))
+    d, rem = divmod(seconds, 86400); h, rem = divmod(rem, 3600); m = rem // 60
+    return " ".join(x for x in (f"{d}d" if d else "", f"{h}h" if h else "", f"{m}m") if x)
+
+def _uptime_targets():
+    out = []
+    for d in sorted([x for x in SITES.iterdir() if x.is_dir()]) if SITES.exists() else []:
+        meta = site_metadata(d)
+        if not meta or meta.get("monitoring") is False:
+            continue
+        try:
+            url = get_site_ops(d.name).get("external_url") or ""
+        except Exception:
+            url = ""
+        domain = meta.get("domain", "")
+        url = url or (f"https://{domain}/" if domain else "")
+        if url:
+            out.append((meta.get("site", d.name), domain, url))
+    return out
+
+def _uptime_internal_hint(site):
+    try:
+        h = site_health(site, "")
+        return f"Container: {h['container']}, Database: {h['db']}"
+    except Exception:
+        return ""
+
+def uptime_apply(site, domain, ok, ms, reason, settings=None):
+    """Update one site's state; email on confirmed down / recovery / reminder."""
+    _uptime_ensure()
+    now_dt = datetime.now(timezone.utc); now = now_dt.isoformat()
+    settings = settings or load_email_settings()
+    send = None
+    with _sq_connect(PLATFORM_DB) as db:
+        row = db.execute("SELECT status,fails,ever_up,first_fail,since,last_email,incident_id FROM uptime_state WHERE site=?", (site,)).fetchone()
+        if row is None:
+            db.execute("INSERT INTO uptime_state(site,status,fails,ever_up) VALUES(?,?,?,?)", (site, "up", 0, 0))
+            row = ("up", 0, 0, None, None, None, None)
+        status, fails, ever_up, first_fail, since, last_email, incident_id = row
+        if ok:
+            if status == "down":
+                started = since or now
+                if incident_id:
+                    db.execute("UPDATE uptime_incidents SET ended=? WHERE id=?", (now, incident_id))
+                dur = _uptime_fmt_duration((now_dt - datetime.fromisoformat(started)).total_seconds())
+                send = ("RECOVERED", f"[WP Host] BACK UP: {site}",
+                        f"{site} ({domain}) is responding again.\n\nDown for: {dur}\nDown since: {started}\nBack at: {now}\nResponse: {reason} in {ms} ms\n")
+            db.execute("UPDATE uptime_state SET status='up',fails=0,ever_up=1,first_fail=NULL,since=?,last_check=?,last_ms=?,last_reason=?,incident_id=NULL WHERE site=?",
+                       (now if status == "down" else since, now, ms, reason, site))
+        else:
+            fails += 1
+            first_fail = first_fail or now
+            db.execute("UPDATE uptime_state SET fails=?,first_fail=?,last_check=?,last_ms=NULL,last_reason=? WHERE site=?",
+                       (fails, first_fail, now, reason, site))
+            if status == "up" and ever_up and fails >= UPTIME_FAILURES_TO_ALERT:
+                cur = db.execute("INSERT INTO uptime_incidents(site,started,reason) VALUES(?,?,?)", (site, first_fail, reason))
+                db.execute("UPDATE uptime_state SET status='down',since=?,last_email=?,incident_id=? WHERE site=?",
+                           (first_fail, now, cur.lastrowid, site))
+                send = ("DOWN", f"[WP Host] DOWN: {site}",
+                        f"{site} ({domain}) is not responding.\n\nProblem: {reason}\nFirst failed check: {first_fail}\n"
+                        f"Confirmed after {fails} failed checks.\n{_uptime_internal_hint(site)}\n")
+            elif status == "down" and UPTIME_REMINDER_HOURS and _hours_since(last_email or since or now) >= UPTIME_REMINDER_HOURS:
+                db.execute("UPDATE uptime_state SET last_email=? WHERE site=?", (now, site))
+                dur = _uptime_fmt_duration((now_dt - datetime.fromisoformat(since or now)).total_seconds())
+                send = ("REMINDER", f"[WP Host] STILL DOWN: {site}",
+                        f"{site} ({domain}) has now been down for {dur}.\n\nLatest problem: {reason}\n{_uptime_internal_hint(site)}\n")
+        db.commit()
+    if send:
+        kind, subject, body = send
+        if kind == "RECOVERED" and not settings.get("send_recovery", True):
+            return kind
+        if kind == "REMINDER" and not alerts_in_business_hours():
+            return kind                     # no 'still down' nagging overnight
+        try:
+            queue_alert("uptime_" + kind.lower(), site, {"DOWN": "CRITICAL", "REMINDER": "HIGH"}.get(kind, "INFO"),
+                        subject.replace("[WP Host] ", ""), body)
+        except Exception:
+            pass
+        return kind
+    return None
+
+def uptime_sweep():
+    from concurrent.futures import ThreadPoolExecutor
+    targets = _uptime_targets()
+    if not targets:
+        return
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda t: uptime_probe(t[2]), targets))
+    # If EVERY site failed, suspect this server's own internet before blaming 3+ sites at once.
+    if len(targets) >= 2 and not any(r[0] for r in results):
+        try:
+            requests.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=8)
+        except Exception:
+            return                  # the host itself is offline: do not count this round
+    settings = load_email_settings()
+    for (site, domain, _url), (ok, ms, reason) in zip(targets, results):
+        try:
+            uptime_apply(site, domain, ok, ms, reason, settings)
+        except Exception as exc:
+            try: log_action("uptime_monitor", site, "failed", str(exc))
+            except Exception: pass
+
+def uptime_monitor_loop():
+    time.sleep(20)
+    while True:
+        try:
+            uptime_sweep()
+        except Exception as exc:
+            try: log_action("uptime_monitor", "system", "failed", str(exc))
+            except Exception: pass
+        time.sleep(UPTIME_INTERVAL_SECONDS)
+
+def uptime_summary():
+    _uptime_ensure()
+    now = datetime.now(timezone.utc)
+    window = timedelta(days=30)
+    rows = []
+    with _sq_connect(PLATFORM_DB) as db:
+        states = {r[0]: r for r in db.execute("SELECT site,status,fails,ever_up,since,last_check,last_ms,last_reason FROM uptime_state").fetchall()}
+        incidents = db.execute("SELECT id,site,started,ended,reason FROM uptime_incidents ORDER BY id DESC LIMIT 200").fetchall()
+    for site, domain, _u in _uptime_targets():
+        st = states.get(site)
+        down_s = 0.0
+        for _id, isite, started, ended, _r in incidents:
+            if isite != site:
+                continue
+            try:
+                a = max(datetime.fromisoformat(started), now - window)
+                b = datetime.fromisoformat(ended) if ended else now
+                if b > a: down_s += (b - a).total_seconds()
+            except Exception:
+                pass
+        pct = max(0.0, 100.0 - down_s * 100.0 / window.total_seconds())
+        if not st:
+            label, cls = "Waiting for first check", "wait"
+        elif st[1] == "down":
+            label, cls = "DOWN since " + (st[4] or "")[:16].replace("T", " ") + " UTC", "down"
+        elif not st[3]:
+            label, cls = "Waiting for first successful check", "wait"
+        elif st[2]:
+            label, cls = f"Up (recent failed checks: {st[2]})", "warn"
+        else:
+            label, cls = "Up", "up"
+        rows.append(dict(site=site, domain=domain, label=label, cls=cls, pct=f"{pct:.2f}",
+                         ms=(st[6] if st and st[6] is not None else "-"), reason=(st[7] if st else "") or "",
+                         checked=((st[5] or "")[:19].replace("T", " ") if st else "-")))
+    inc = [dict(site=i[1], started=i[2][:16].replace("T", " "), ended=(i[3][:16].replace("T", " ") if i[3] else "ongoing"),
+                reason=i[4] or "") for i in incidents[:20]]
+    return rows, inc
+
+UPTIME_HTML = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60"><title>Uptime</title>
+<style>:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}
+.wrap{max-width:1100px;margin:30px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px;overflow-x:auto}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line);font-size:14px}
+.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}.b{display:inline-block;padding:3px 9px;border-radius:999px;font-weight:700;font-size:12px}
+.up{background:#064e3b}.down{background:#991b1b}.warn{background:#92400e}.wait{background:#374151}</style></head><body><div class="wrap">
+<p><a href="/">&larr; Dashboard</a></p><h1>Site uptime</h1>
+<p class="muted">Checked every {{ interval }} s from this server. A site is reported down after {{ fails }} failed checks in a row; email is sent when it goes down and when it recovers.</p>
+<div class="card"><table><tr><th>Site</th><th>Status</th><th>30-day uptime</th><th>Response</th><th>Last check (UTC)</th><th>Detail</th></tr>
+{% for r in rows %}<tr><td><b>{{ r.site }}</b><br><span class="muted">{{ r.domain }}</span></td><td><span class="b {{ r.cls }}">{{ r.label }}</span></td>
+<td>{{ r.pct }}%</td><td>{{ r.ms }}{% if r.ms != '-' %} ms{% endif %}</td><td>{{ r.checked }}</td><td class="muted">{{ r.reason }}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">No sites to monitor yet.</td></tr>{% endfor %}</table></div>
+<div class="card"><h2 style="margin-top:0">Recent incidents</h2><table><tr><th>Site</th><th>Started (UTC)</th><th>Ended</th><th>Problem</th></tr>
+{% for i in inc %}<tr><td>{{ i.site }}</td><td>{{ i.started }}</td><td>{{ i.ended }}</td><td class="muted">{{ i.reason }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">No outages recorded.</td></tr>{% endfor %}</table></div></div></body></html>"""
+
+@APP.get("/uptime")
+@alerts_required
+def uptime_page():
+    rows, inc = uptime_summary()
+    return render_template_string(UPTIME_HTML, rows=rows, inc=inc, interval=UPTIME_INTERVAL_SECONDS, fails=UPTIME_FAILURES_TO_ALERT)
+
+
+
+# ---------------------------------------------------------------------------
+# Safe plugin updates (server side, with automatic rollback)
+# ---------------------------------------------------------------------------
+PLUGIN_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+PLUGIN_SNAPSHOTS_KEPT = 3
+
+def plugin_updates_file(site):
+    return SITES / site / "plugin-updates.json"
+
+def plugin_updates_load(site):
+    try:
+        return json.loads(plugin_updates_file(site).read_text())
+    except Exception:
+        return {}
+
+def plugin_updates_save(site, data):
+    f = plugin_updates_file(site)
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(f)
+
+def _site_env(site):
+    env = {}
+    for line in (SITES / site / ".env").read_text().splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1); env[k] = v
+    return env
+
+def wp_cli(site, args, timeout=180):
+    """Run wp-cli in a throw-away wordpress:cli container that shares the site's files and
+    database network. Returns (returncode, stdout, stderr)."""
+    env = _site_env(site)
+    cmd = ["docker", "run", "--rm", "-m", "512m", "--network", f"{site}_internal",
+           "--volumes-from", f"{site}-wp",
+           "-e", f"WORDPRESS_DB_HOST={site}-db:3306", "-e", f"WORDPRESS_DB_NAME={env.get('DB_NAME', '')}",
+           "-e", f"WORDPRESS_DB_USER={env.get('DB_USER', '')}", "-e", f"WORDPRESS_DB_PASSWORD={env.get('DB_PASSWORD', '')}",
+           "wordpress:cli", "wp", *args, "--allow-root", "--path=/var/www/html"]
+    pr = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
+    return pr.returncode, pr.stdout or "", pr.stderr or ""
+
+def _json_from_output(text):
+    """wp-cli output can be preceded by PHP notices (which may contain brackets): take the
+    first '[' that starts a real JSON list of objects."""
+    dec = json.JSONDecoder()
+    i = text.find("[")
+    while i >= 0:
+        try:
+            val, _end = dec.raw_decode(text[i:])
+            if isinstance(val, list) and all(isinstance(x, dict) for x in val):
+                return val
+        except ValueError:
+            pass
+        i = text.find("[", i + 1)
+    raise ValueError("no JSON in wp-cli output")
+
+def plugin_updates_check(site):
+    """Ask wordpress.org (through wp-cli) which plugins have updates. Changes nothing."""
+    rc, out, err = wp_cli(site, ["eval", "delete_site_transient('update_plugins'); wp_update_plugins(); echo 'CHECK-OK';"], 120)
+    if rc != 0 or "CHECK-OK" not in out:
+        raise RuntimeError("Could not check for updates: " + (err or out).strip()[-400:])
+    rc, out, err = wp_cli(site, ["plugin", "list", "--format=json", "--fields=name,title,status,version,update,update_version"], 120)
+    if rc != 0:
+        raise RuntimeError("Could not list plugins: " + (err or out).strip()[-400:])
+    plugins = _json_from_output(out)
+    data = plugin_updates_load(site)
+    data["checked_at"] = datetime.now(timezone.utc).isoformat()
+    data["plugins"] = plugins
+    plugin_updates_save(site, data)
+    return plugins
+
+def plugin_update_verify(site, domain):
+    """Is the site healthy? WordPress must load (wp eval), and the home page and login page
+    must answer without a server error or a WordPress 'critical error' screen."""
+    problems = []
+    try:
+        rc, out, err = wp_cli(site, ["eval", "echo 'WP-OK';"], 120)
+        blob = out + err
+        if rc != 0 or "WP-OK" not in out:
+            problems.append("WordPress did not load: " + blob.strip()[-300:])
+        elif re.search(r"Fatal error|critical error", blob, re.I):
+            problems.append("WordPress reported an error: " + blob.strip()[-300:])
+    except Exception as exc:
+        problems.append(f"WordPress check failed: {exc}")
+    for path in ("/", "/wp-login.php"):
+        try:
+            r = requests.get(f"https://{domain}{path}", timeout=25, allow_redirects=True,
+                             headers={"User-Agent": "WPHost-PluginUpdate/1.0"})
+            if r.status_code >= 500:
+                problems.append(f"{path} returned HTTP {r.status_code}")
+            elif re.search(r"critical error on this website|Fatal error:", r.text[:200000], re.I):
+                problems.append(f"{path} shows a WordPress error page")
+        except Exception as exc:
+            problems.append(f"{path} did not answer: {str(exc)[:150]}")
+    return (not problems), problems
+
+def _plugin_dir_exists(site, slug):
+    pr = subprocess.run(["docker", "exec", f"{site}-wp", "test", "-d", f"/var/www/html/wp-content/plugins/{slug}"],
+                        capture_output=True, timeout=30)
+    return pr.returncode == 0
+
+def _plugin_snapshot(site, slug, dest):
+    with dest.open("wb") as f:
+        pr = subprocess.run(["docker", "exec", f"{site}-wp", "tar", "-C", "/var/www/html/wp-content/plugins", "-czf", "-", slug],
+                            stdout=f, stderr=subprocess.PIPE, timeout=600)
+    if pr.returncode != 0 or dest.stat().st_size == 0:
+        raise RuntimeError("could not save the current plugin folder: " + pr.stderr.decode(errors="ignore")[-200:])
+
+def _plugin_restore(site, slug, src):
+    with src.open("rb") as f:
+        pr = subprocess.run(["docker", "exec", "-i", f"{site}-wp", "sh", "-c",
+                             f"set -e; cd /var/www/html/wp-content/plugins; rm -rf -- '{slug}'; tar -xzf -; chown -R www-data:www-data '{slug}'"],
+                            stdin=f, capture_output=True, timeout=600)
+    if pr.returncode != 0:
+        raise RuntimeError("restore failed: " + pr.stderr.decode(errors="ignore")[-200:])
+
+def _plugin_db_dump(site, dest):
+    env = _site_env(site)
+    raw = dest.with_suffix("")
+    with raw.open("wb") as f:
+        pr = subprocess.run(["docker", "exec", f"{site}-db", "mariadb-dump", "-u", env["DB_USER"], f"-p{env['DB_PASSWORD']}", env["DB_NAME"]],
+                            stdout=f, stderr=subprocess.PIPE, timeout=900)
+    if pr.returncode != 0:
+        raw.unlink(missing_ok=True)
+        raise RuntimeError("database dump failed: " + pr.stderr.decode(errors="ignore")[-200:])
+    run(["gzip", "-f", str(raw)])
+
+def _plugin_versions(site):
+    rc, out, err = wp_cli(site, ["plugin", "list", "--format=json", "--fields=name,version"], 120)
+    return {x["name"]: x["version"] for x in _json_from_output(out)} if rc == 0 else {}
+
+def plugin_updates_run(site, slugs, username="-"):
+    """Update the given plugins one at a time with automatic rollback. Returns the run report."""
+    meta = site_metadata(SITES / site) or {}
+    if meta.get("type", "wordpress") != "wordpress":
+        raise ValueError("Plugin updates are only available for WordPress sites.")
+    domain = meta.get("domain", "")
+    if not domain:
+        raise ValueError("This site has no domain set.")
+    slugs = [x for x in dict.fromkeys(slugs)]
+    bad = [x for x in slugs if not PLUGIN_SLUG_RE.match(x)]
+    if bad or not slugs:
+        raise ValueError("Choose at least one valid plugin to update.")
+    c = docker_client.containers.get(f"{site}-wp")
+    if c.status != "running":
+        raise RuntimeError("The site is not running. Start it first.")
+
+    now = datetime.now(timezone.utc)
+    report = {"started": now.isoformat(), "by": username, "results": [], "status": "success", "note": ""}
+    bg_progress(5, "Checking the site is healthy before touching anything")
+    healthy, problems = plugin_update_verify(site, domain)
+    if not healthy:
+        report["status"] = "aborted"
+        report["note"] = "The site is already failing, so nothing was updated: " + "; ".join(problems)
+        _plugin_run_finish(site, report)
+        return report
+
+    snapdir = SITES / site / "plugin-update-snapshots" / now.strftime("%Y%m%d-%H%M%S")
+    snapdir.mkdir(parents=True, exist_ok=True)
+    os.chmod(snapdir, 0o700)
+    bg_require_disk(snapdir, 512, label="take the safety snapshot")
+    bg_progress(12, "Saving a database safety copy")
+    _plugin_db_dump(site, snapdir / "database.sql.gz")
+    report["snapshot"] = str(snapdir)
+    before = _plugin_versions(site)
+
+    stop = False
+    for n, slug in enumerate(slugs):
+        pct = 20 + int(n * 75 / len(slugs))
+        res = {"plugin": slug, "from": before.get(slug, "-"), "to": "-", "result": "", "detail": ""}
+        report["results"].append(res)
+        if stop:
+            res["result"] = "skipped"; res["detail"] = "not attempted because an earlier rollback failed"
+            continue
+        try:
+            if not _plugin_dir_exists(site, slug):
+                res["result"] = "skipped"; res["detail"] = "single-file plugin: cannot be rolled back safely, update it by hand"
+                continue
+            bg_progress(pct, f"Updating {slug}")
+            snap = snapdir / f"{slug}.tgz"
+            _plugin_snapshot(site, slug, snap)
+            rc, out, err = wp_cli(site, ["plugin", "update", slug], 600)
+            up_ok = rc == 0 and not re.search(r"^Error:", out + err, re.M)
+            res["to"] = _plugin_versions(site).get(slug, "-")
+            if up_ok:
+                time.sleep(3)
+                healthy, problems = plugin_update_verify(site, domain)
+                if not healthy:
+                    time.sleep(6)
+                    healthy, problems = plugin_update_verify(site, domain)      # one retry for a slow restart
+            else:
+                healthy, problems = False, ["wp-cli could not update it: " + (err or out).strip()[-300:]]
+            if healthy:
+                res["result"] = "updated" if res["to"] != res["from"] else "already current"
+                continue
+            bg_progress(pct, f"Problem after updating {slug} - rolling back")
+            _plugin_restore(site, slug, snap)
+            ok_after, problems_after = plugin_update_verify(site, domain)
+            res["detail"] = "; ".join(problems)[:600]
+            if ok_after:
+                res["result"] = "rolled back"
+                res["to"] = res["from"]
+                report["status"] = "rolled_back" if report["status"] == "success" else report["status"]
+            else:
+                res["result"] = "ROLLBACK FAILED"
+                res["detail"] += " | after rollback: " + "; ".join(problems_after)[:300]
+                report["status"] = "rollback_failed"
+                stop = True
+        except Exception as exc:
+            res["result"] = "error"; res["detail"] = str(exc)[:400]
+            if report["status"] == "success":
+                report["status"] = "rolled_back"
+    _plugin_run_finish(site, report)
+    return report
+
+def _plugin_run_finish(site, report):
+    report["finished"] = datetime.now(timezone.utc).isoformat()
+    data = plugin_updates_load(site)
+    data["last_run"] = report
+    try:
+        plugin_updates_save(site, data)
+    except Exception:
+        pass
+    # keep only the newest few snapshots
+    try:
+        root = SITES / site / "plugin-update-snapshots"
+        old = sorted([d for d in root.iterdir() if d.is_dir()])[:-PLUGIN_SNAPSHOTS_KEPT]
+        for d in old:
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception:
+        pass
+    updated = [r["plugin"] for r in report["results"] if r["result"] == "updated"]
+    problems = [r for r in report["results"] if r["result"] in ("rolled back", "ROLLBACK FAILED", "error")]
+    status = report["status"]
+    log_action("plugin_update", site, {"success": "success", "aborted": "warning", "rolled_back": "warning"}.get(status, "failed"),
+               f"updated={','.join(updated) or '-'}; problems={','.join(r['plugin'] for r in problems) or '-'}; status={status}")
+    if status in ("aborted", "rolled_back", "rollback_failed"):
+        lines = [f"{r['plugin']}: {r['result']} - {r['detail']}" for r in report["results"] if r["detail"]]
+        urgent = ("URGENT - a rollback failed; the site may be broken. Restore from the snapshot at "
+                  f"{report.get('snapshot','-')} or from a normal backup.\n\n") if status == "rollback_failed" else ""
+        try:
+            send_alert_email(f"[WP Host] Plugin update {status.replace('_', ' ')}: {site}",
+                             f"{urgent}Plugin update run for {site} (started by {report.get('by','-')}).\n\n"
+                             f"Result: {status}\n{report.get('note','')}\n" + "\n".join(lines) + "\n"
+                             + ("\nFailing plugins were put back to the version that was installed before. "
+                                "The site was checked and is working.\n" if status == "rolled_back" else ""))
+        except Exception:
+            pass
+
+PLUGINS_HTML = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Plugin updates</title>
+<style>:root{color-scheme:dark;--bg:#07111f;--panel:#0f1b2d;--line:#263850;--text:#e7eef8;--muted:#91a3bb;--blue:#2563eb;--green:#059669}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}
+.wrap{max-width:1100px;margin:30px auto;padding:0 18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px;overflow-x:auto}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}
+.muted{color:var(--muted)}a{color:#82b6ff;text-decoration:none}.btn{border:0;border-radius:7px;padding:9px 14px;color:#fff;font-weight:700;cursor:pointer;background:var(--blue)}.btn.g{background:var(--green)}
+.flash{background:#162941;border:1px solid var(--line);padding:10px;border-radius:8px;margin-bottom:10px}.good{color:#4ade80}.bad{color:#fb7185}.warn{color:#fbbf24}</style></head><body><div class="wrap">
+<p><a href="/site/{{ site }}">&larr; {{ site }}</a></p><h1>Plugin updates - {{ site }}</h1>
+{% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
+<p class="muted">Updates run on the server, one plugin at a time, never through wp-admin. Before each one the plugin's folder and the database are saved; if the site or wp-admin stops loading afterwards, the old plugin is put back automatically and you are emailed.</p>
+<div class="card"><form method="post" action="/site/{{ site }}/plugins/check" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn">Check for updates</button></form>
+<span class="muted"> {% if checked %}Last checked {{ checked }} UTC{% else %}Not checked yet{% endif %}</span></div>
+{% if plugins %}<form method="post" action="/site/{{ site }}/plugins/update"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="card">
+<table><tr><th></th><th>Plugin</th><th>Status</th><th>Installed</th><th>Update</th></tr>
+{% for p in plugins %}<tr><td>{% if p.update == 'available' %}<input type="checkbox" name="slug" value="{{ p.name }}" checked>{% endif %}</td>
+<td><b>{{ p.title or p.name }}</b><br><span class="muted">{{ p.name }}</span></td><td>{{ p.status }}</td><td>{{ p.version }}</td>
+<td>{% if p.update == 'available' %}<span class="warn">{{ p.update_version }}</span>{% else %}<span class="muted">up to date</span>{% endif %}</td></tr>{% endfor %}</table>
+<p><button class="btn g" onclick="return confirm('Update the ticked plugins now? Each one is health-checked and rolled back if it breaks the site.')">Update ticked plugins</button></p></div></form>{% endif %}
+{% if last %}<div class="card"><h2 style="margin-top:0">Last update run</h2><p class="muted">{{ last.started[:16].replace('T',' ') }} UTC by {{ last.by }} &middot; overall:
+<b class="{{ 'good' if last.status=='success' else ('warn' if last.status in ['rolled_back','aborted'] else 'bad') }}">{{ last.status.replace('_',' ') }}</b></p>
+{% if last.note %}<p>{{ last.note }}</p>{% endif %}<table><tr><th>Plugin</th><th>From</th><th>To</th><th>Result</th><th>Detail</th></tr>
+{% for r in last.results %}<tr><td>{{ r.plugin }}</td><td>{{ r['from'] }}</td><td>{{ r.to }}</td><td class="{{ 'good' if r.result in ['updated','already current'] else ('warn' if r.result in ['rolled back','skipped'] else 'bad') }}">{{ r.result }}</td><td class="muted">{{ r.detail }}</td></tr>{% endfor %}</table></div>{% endif %}
+</div></body></html>"""
+
+@APP.get("/site/<site>/plugins")
+@login_required
+def plugins_page(site):
+    if not SITE_RE.match(site) or not (SITES / site).exists():
+        abort(404)
+    data = plugin_updates_load(site)
+    return render_template_string(PLUGINS_HTML, site=site, plugins=data.get("plugins", []),
+                                  checked=(data.get("checked_at") or "")[:16].replace("T", " "), last=data.get("last_run"))
+
+@APP.post("/site/<site>/plugins/check")
+@operator_required
+@background_task(lambda kw: f"Checking plugin updates for {kw['site']}", lock=lambda kw: "site:" + kw["site"],
+                 after=lambda kw: url_for("plugins_page", site=kw["site"]))
+def plugins_check_route(site):
+    if not SITE_RE.match(site) or not (SITES / site).exists():
+        abort(404)
+    try:
+        bg_progress(None, "Asking wordpress.org which plugins have updates")
+        plugins = plugin_updates_check(site)
+        n = sum(1 for x in plugins if x.get("update") == "available")
+        log_action("plugin_update_check", site, "success", f"{n} update(s) available")
+        flash(f"{site}: {n} plugin update(s) available." if n else f"{site}: all plugins are up to date.")
+    except Exception as exc:
+        log_action("plugin_update_check", site, "failed", str(exc))
+        flash(f"{site}: {exc}")
+    return redirect(url_for("plugins_page", site=site))
+
+@APP.post("/site/<site>/plugins/update")
+@operator_required
+@background_task(lambda kw: f"Updating plugins on {kw['site']}", lock=lambda kw: "site:" + kw["site"],
+                 after=lambda kw: url_for("plugins_page", site=kw["site"]))
+def plugins_update_route(site):
+    if not SITE_RE.match(site) or not (SITES / site).exists():
+        abort(404)
+    slugs = request.form.getlist("slug")
+    try:
+        report = plugin_updates_run(site, slugs, session.get("username", "-"))
+        flash(f"{site}: plugin update finished - {report['status'].replace('_', ' ')}."
+              + (" " + report["note"] if report.get("note") else ""))
+    except Exception as exc:
+        log_action("plugin_update", site, "failed", str(exc))
+        flash(f"{site}: plugin update did not run: {exc}")
+    return redirect(url_for("plugins_page", site=site))
+
+
+
+# ---------------------------------------------------------------------------
+# Live CPU / RAM per site. One `docker stats` call samples every container every few seconds
+# (only while someone has the dashboard open); the pages poll /api/live-stats.
+#   CPU % and RAM % are shares of what the site is ALLOWED (its container limits), so 100% means
+#   the site is using everything it has been given. Containers with no limit are measured against
+#   the whole server instead.
+# ---------------------------------------------------------------------------
+LIVE_STATS_INTERVAL = max(2, int(os.environ.get("WP_LIVE_STATS_INTERVAL", "5")))
+_LIVE = {"ts": 0.0, "last_request": 0.0, "data": {"sites": {}, "host": {}}}
+_LIVE_REFRESH_LOCK = threading.Lock()
+try:
+    psutil.cpu_percent(interval=None)
+except Exception:
+    pass
+
+_SIZE_UNITS = {"b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12,
+               "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3, "tib": 1024 ** 4}
+
+def _parse_size(text):
+    m = re.match(r"\s*([\d.]+)\s*([A-Za-z]+)", text or "")
+    if not m:
+        return 0.0
+    return float(m.group(1)) * _SIZE_UNITS.get(m.group(2).lower(), 1)
+
+def live_stats_aggregate(rows, limits, site_names, host_cores, host_mem):
+    """rows: [{'Name','CPUPerc','MemUsage'}]; limits: {container: (cpu_cores or 0, mem_bytes or 0)}."""
+    names = sorted(site_names, key=len, reverse=True)
+    agg = {n: {"cpu_used": 0.0, "cpu_alloc": 0.0, "cpu_unlim_used": 0.0, "mem_used": 0.0, "mem_alloc": 0.0,
+               "mem_unlim_used": 0.0, "containers": 0} for n in site_names}
+    for r in rows:
+        cname = r.get("Name", "")
+        site = next((n for n in names if cname.startswith(n + "-")), None)
+        if not site:
+            continue
+        a = agg[site]
+        cpu = float((r.get("CPUPerc", "0%") or "0%").strip().rstrip("%") or 0) / 100.0      # cores in use
+        mem = _parse_size((r.get("MemUsage", "") or "").split("/")[0])
+        cpu_lim, mem_lim = limits.get(cname, (0, 0))
+        a["containers"] += 1
+        if cpu_lim:
+            a["cpu_used"] += cpu; a["cpu_alloc"] += cpu_lim
+        else:
+            a["cpu_unlim_used"] += cpu
+        if mem_lim:
+            a["mem_used"] += mem; a["mem_alloc"] += mem_lim
+        else:
+            a["mem_unlim_used"] += mem
+    out = {}
+    for n, a in agg.items():
+        if not a["containers"]:
+            out[n] = {"running": False}
+            continue
+        if a["cpu_alloc"]:
+            cpu_used, cpu_den = a["cpu_used"], a["cpu_alloc"]
+        else:
+            cpu_used, cpu_den = a["cpu_unlim_used"], float(host_cores)
+        if a["mem_alloc"]:
+            mem_used, mem_den = a["mem_used"], a["mem_alloc"]
+        else:
+            mem_used, mem_den = a["mem_unlim_used"], float(host_mem)
+        out[n] = {"running": True,
+                  "cpu_pct": round(min(999.0, cpu_used / cpu_den * 100.0), 1) if cpu_den else 0.0,
+                  "ram_pct": round(min(999.0, mem_used / mem_den * 100.0), 1) if mem_den else 0.0,
+                  "cpu_used": round(cpu_used, 2), "cpu_alloc": round(cpu_den, 2) if a["cpu_alloc"] else None,
+                  "mem_used_mb": int(mem_used / 1048576),
+                  "mem_limit_mb": int(mem_den / 1048576) if a["mem_alloc"] else None}
+    return out
+
+def live_stats_refresh():
+    if not _LIVE_REFRESH_LOCK.acquire(blocking=False):
+        return
+    try:
+        pr = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{json .}}"],
+                            capture_output=True, text=True, timeout=25)
+        rows = []
+        for line in pr.stdout.splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+        limits = {}
+        for c in docker_client.containers.list():
+            hc = c.attrs.get("HostConfig", {}) or {}
+            cores = (hc.get("NanoCpus") or 0) / 1e9
+            if not cores and (hc.get("CpuQuota") or 0) > 0:
+                cores = hc["CpuQuota"] / float(hc.get("CpuPeriod") or 100000)
+            limits[c.name] = (cores, hc.get("Memory") or 0)
+        site_dirs = [d for d in (sorted(SITES.iterdir()) if SITES.exists() else []) if (d / "site.json").exists()]
+        per_site = live_stats_aggregate(rows, limits, [d.name for d in site_dirs],
+                                        psutil.cpu_count() or 1, psutil.virtual_memory().total)
+        for d in site_dirs:
+            meta = site_metadata(d) or {}
+            per_site[d.name]["domain"] = meta.get("domain", "")
+        _LIVE["data"] = {"sites": per_site,
+                         "host": {"cpu": psutil.cpu_percent(interval=None), "ram": psutil.virtual_memory().percent}}
+        _LIVE["ts"] = time.time()
+    except Exception as exc:
+        _LIVE["error"] = str(exc)[:200]
+    finally:
+        _LIVE_REFRESH_LOCK.release()
+
+def live_stats_loop():
+    while True:
+        try:
+            if time.time() - _LIVE["last_request"] < 90:      # only sample while someone is watching
+                live_stats_refresh()
+        except Exception:
+            pass
+        time.sleep(LIVE_STATS_INTERVAL)
+
+@APP.get("/api/live-stats")
+@login_required
+def api_live_stats():
+    _LIVE["last_request"] = time.time()
+    if time.time() - _LIVE["ts"] > 15:
+        live_stats_refresh()
+    d = dict(_LIVE["data"]); d["ts"] = _LIVE["ts"]; d["interval"] = LIVE_STATS_INTERVAL
+    resp = jsonify(d)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+LIVE_JS = r"""(function(){
+var st=document.createElement('style');
+st.textContent='.lv{display:grid;grid-template-columns:34px 1fr 46px;align-items:center;gap:8px;font-size:12px;margin:5px 0}.lv-t{color:var(--muted,#91a3bb);font-weight:700;font-size:11px}.lv-track{height:8px;border-radius:6px;background:rgba(127,127,127,.28);overflow:hidden}.lv-track b{display:block;height:100%;width:0;border-radius:6px;background:#19b56b;transition:width .6s ease,background-color .6s}.lv-track b.lv-amber{background:#f59e0b}.lv-track b.lv-red{background:#ef4444}.lv-p{text-align:right;font-weight:800;font-variant-numeric:tabular-nums}.lv-sub{color:var(--muted,#91a3bb);font-size:11px;margin-top:2px}.lv-off{color:var(--muted,#91a3bb);font-size:12px}#liveSites .lvrow{display:grid;grid-template-columns:minmax(150px,1.1fr) 2fr 2fr;gap:18px;align-items:center;padding:10px 4px;border-bottom:1px solid var(--line,#263850)}#liveSites .lvrow:last-child{border-bottom:0}#liveSites .lvname{font-weight:800}#liveSites .lvname small{display:block;font-weight:400;color:var(--muted,#91a3bb)}@media(max-width:760px){#liveSites .lvrow{grid-template-columns:1fr}}';
+document.head.appendChild(st);
+function cls(p){return p>=85?'lv-red':(p>=60?'lv-amber':'')}
+function fmt(p){return (p<10?p.toFixed(1):Math.round(p))+'%'}
+function bar(k,label){return '<div class="lv"><span class="lv-t">'+label+'</span><div class="lv-track"><b data-b="'+k+'"></b></div><span class="lv-p" data-p="'+k+'">&ndash;</span></div>'}
+function build(el){el.innerHTML=bar('cpu','CPU')+bar('ram','RAM')+'<div class="lv-sub" data-sub></div>';el.dataset.built='1'}
+function fill(el,s){
+ if(!el.dataset.built)build(el);
+ if(!s||!s.running){['cpu','ram'].forEach(function(k){el.querySelector('[data-p="'+k+'"]').textContent='-';var b=el.querySelector('[data-b="'+k+'"]');b.style.width='0';b.className=''});el.querySelector('[data-sub]').textContent=s?'not running':'';return}
+ [['cpu',s.cpu_pct],['ram',s.ram_pct]].forEach(function(x){var b=el.querySelector('[data-b="'+x[0]+'"]');b.style.width=Math.min(100,x[1])+'%';b.className=cls(x[1]);el.querySelector('[data-p="'+x[0]+'"]').textContent=fmt(x[1])});
+ el.querySelector('[data-sub]').textContent=s.cpu_used.toFixed(2)+(s.cpu_alloc?' of '+s.cpu_alloc+' CPU':' CPU (of server)')+' · '+s.mem_used_mb+(s.mem_limit_mb?' / '+s.mem_limit_mb:'')+' MB'}
+function esc(t){return String(t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function apply(d){
+ var box=document.getElementById('liveSites');
+ if(box){var names=Object.keys(d.sites).sort();
+  if(box.dataset.n!==names.join(',')){box.dataset.n=names.join(',');box.innerHTML=names.map(function(n){return '<div class="lvrow"><div class="lvname"><a href="/site/'+encodeURIComponent(n)+'">'+esc(n)+'</a><small>'+esc(d.sites[n].domain||'')+'</small></div><div data-live-site="'+esc(n)+'" data-half="cpu"></div><div data-live-ram="'+esc(n)+'"></div></div>'}).join('')||'<div class="lv-off">No sites yet.</div>'}
+  names.forEach(function(n){var r=box.querySelector('[data-live-site="'+n+'"][data-half]'),m=box.querySelector('[data-live-ram="'+n+'"]'),s=d.sites[n];
+   if(r&&!r.dataset.built){r.innerHTML=bar('cpu','CPU');r.dataset.built='1';m.innerHTML=bar('ram','RAM')+'<div class="lv-sub" data-sub></div>'}
+   if(!r)return;
+   function one(el,k,pct){var b=el.querySelector('[data-b="'+k+'"]'),p=el.querySelector('[data-p="'+k+'"]');if(!s||!s.running){b.style.width='0';b.className='';p.textContent='-';return}b.style.width=Math.min(100,pct)+'%';b.className=cls(pct);p.textContent=fmt(pct)}
+   one(r,'cpu',s?s.cpu_pct:0);one(m,'ram',s?s.ram_pct:0);
+   var sub=m.querySelector('[data-sub]');sub.textContent=(!s||!s.running)?'not running':s.cpu_used.toFixed(2)+(s.cpu_alloc?' of '+s.cpu_alloc+' CPU':' CPU')+' · '+s.mem_used_mb+(s.mem_limit_mb?' / '+s.mem_limit_mb:'')+' MB'});
+  var h=document.getElementById('liveHost');if(h&&d.host)h.textContent='Server now: CPU '+Math.round(d.host.cpu)+'% · RAM '+Math.round(d.host.ram)+'% · updated '+new Date().toLocaleTimeString()}
+ document.querySelectorAll('[data-live-site]:not([data-half])').forEach(function(el){fill(el,d.sites[el.getAttribute('data-live-site')])});
+}
+function tick(){if(document.hidden)return;fetch('/api/live-stats',{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(d){if(d&&d.sites)apply(d)}).catch(function(){})}
+tick();setInterval(tick,4000);document.addEventListener('visibilitychange',tick);
+})();"""
+
+@APP.get("/live-stats.js")
+def live_stats_js():
+    resp = APP.response_class(LIVE_JS, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+
+# ---------------------------------------------------------------------------
+# Alert queue: one combined email, only in business hours
+# ---------------------------------------------------------------------------
+ALERT_TZ = ZoneInfo(os.environ.get("WP_ALERT_TZ", "Australia/Adelaide"))
+ALERT_START_HOUR = int(os.environ.get("WP_ALERT_START_HOUR", "8"))
+ALERT_END_HOUR = int(os.environ.get("WP_ALERT_END_HOUR", "17"))
+ALERT_DAYS = {int(x) for x in re.findall(r"[1-7]", os.environ.get("WP_ALERT_DAYS", "1,2,3,4,5,6,7"))} or {1, 2, 3, 4, 5, 6, 7}
+ALERT_BATCH_SECONDS = max(0, int(os.environ.get("WP_ALERT_BATCH_SECONDS", "120")))
+ALERT_QUEUE_MAX = 500
+_ALERT_STATE = {"retry_after": 0.0}
+
+def alerts_in_business_hours(now=None):
+    local = (now or datetime.now(timezone.utc)).astimezone(ALERT_TZ)
+    return local.isoweekday() in ALERT_DAYS and ALERT_START_HOUR <= local.hour < ALERT_END_HOUR
+
+def _alertq_ensure():
+    with _sq_connect(PLATFORM_DB) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS alert_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT NOT NULL, kind TEXT NOT NULL, site TEXT NOT NULL,
+            severity TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, finding_id INTEGER,
+            sent INTEGER NOT NULL DEFAULT 0)""")
+        db.commit()
+
+def queue_alert(kind, site, severity, title, body, finding_id=None, now=None):
+    _alertq_ensure()
+    with _sq_connect(PLATFORM_DB) as db:
+        db.execute("INSERT INTO alert_queue(created,kind,site,severity,title,body,finding_id) VALUES(?,?,?,?,?,?,?)",
+                   ((now or datetime.now(timezone.utc)).isoformat(), kind, site, severity, title, body, finding_id))
+        db.execute("DELETE FROM alert_queue WHERE sent=0 AND id NOT IN (SELECT id FROM alert_queue WHERE sent=0 ORDER BY id DESC LIMIT ?)",
+                   (ALERT_QUEUE_MAX,))
+        db.commit()
+
+_SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "INFO": 3}
+
+def alert_queue_flush(now=None, force=False):
+    """Send ONE email for everything queued. Returns the number of alerts included (0 = nothing sent)."""
+    now = now or datetime.now(timezone.utc)
+    if not force and not alerts_in_business_hours(now):
+        return 0
+    _alertq_ensure()
+    with _sq_connect(PLATFORM_DB) as db:
+        rows = db.execute("SELECT id,created,kind,site,severity,title,body,finding_id FROM alert_queue WHERE sent=0 ORDER BY id").fetchall()
+        if not rows:
+            return 0
+        if not force:
+            age = (now - datetime.fromisoformat(rows[0][1])).total_seconds()
+            overnight = not alerts_in_business_hours(datetime.fromisoformat(rows[0][1]))
+            if age < ALERT_BATCH_SECONDS and not overnight:
+                return 0                     # wait a moment so a burst becomes one email
+        # leave out findings that have since cleared
+        live, dropped = [], []
+        for r in rows:
+            if r[7] is not None:
+                st = db.execute("SELECT active FROM security_findings WHERE id=?", (r[7],)).fetchone()
+                if not st or not st[0]:
+                    dropped.append(r[0]); continue
+            live.append(r)
+        if dropped:
+            db.executemany("UPDATE alert_queue SET sent=1 WHERE id=?", [(i,) for i in dropped]); db.commit()
+    if not live:
+        return 0
+    settings = load_email_settings()
+    if not settings.get("enabled"):
+        return 0
+    if not force and time.time() < _ALERT_STATE["retry_after"]:
+        return 0
+    held_overnight = not alerts_in_business_hours(datetime.fromisoformat(live[0][1]))
+    worst = {}
+    for r in live:
+        worst[r[3]] = min(worst.get(r[3], 9), _SEV_ORDER.get(r[4], 9))
+    live.sort(key=lambda r: (worst[r[3]], r[3], _SEV_ORDER.get(r[4], 9), r[0]))     # worst site first, one section per site
+    crit = sum(1 for r in live if r[4] == "CRITICAL")
+    n = len(live)
+    sites = sorted({r[3] for r in live})
+    subject = (f"[WP Host] {'Overnight summary: ' if held_overnight else ''}{n} alert{'s' if n != 1 else ''}"
+               + (f" ({crit} critical)" if crit else "") + (f" - {sites[0]}" if len(sites) == 1 else f" across {len(sites)} sites"))
+    lines = [f"WP Host alert summary - {n} alert(s) for {', '.join(sites)}",
+             "Held until business hours." if held_overnight else "", ""]
+    last_site = None
+    for _id, created, kind, site, sev, title, body, _fid in live:
+        if site != last_site:
+            lines += ["", f"=== {site} ==="]; last_site = site
+        t = datetime.fromisoformat(created).astimezone(ALERT_TZ).strftime("%d %b %H:%M")
+        lines.append(f"[{sev}] {title}   ({t})")
+        lines += ["    " + x for x in str(body).splitlines()[:8] if x.strip()]
+    if MANAGER_DOMAIN:
+        lines += ["", f"Details: https://{MANAGER_DOMAIN}/alerts", f"Uptime: https://{MANAGER_DOMAIN}/uptime"]
+    ok, detail = send_alert_email(subject, "\n".join(lines) + "\n", settings)
+    if ok:
+        with _sq_connect(PLATFORM_DB) as db:
+            db.executemany("UPDATE alert_queue SET sent=1 WHERE id=?", [(r[0],) for r in live])
+            fids = [(r[7],) for r in live if r[7] is not None]
+            if fids:
+                db.executemany("UPDATE security_findings SET email_sent=1 WHERE id=?", fids)
+            db.commit()
+    else:
+        _ALERT_STATE["retry_after"] = time.time() + 300      # SMTP trouble: try again in 5 minutes
+    try:
+        log_action("alert_digest_email", "system", "success" if ok else "failed", f"{n} alert(s); {detail}")
+    except Exception:
+        pass
+    return n if ok else 0
+
+def alert_queue_loop():
+    while True:
+        try:
+            alert_queue_flush()
+        except Exception as exc:
+            try: log_action("alert_digest_email", "system", "failed", str(exc)[:200])
+            except Exception: pass
+        time.sleep(60)
+
+
+
+# ---------------------------------------------------------------------------
+# Monitoring & Alerts settings page
+# ---------------------------------------------------------------------------
+MONITORING_SETTINGS_FILE = BASE / "monitoring-settings.json"
+MONITOR_EMAIL_CHOICES = [
+    ("new_admin_user", "A new WordPress administrator is created", {"new_admin_user"}),
+    ("php_in_uploads", "A PHP file appears in wp-content/uploads", {"php_in_uploads"}),
+    ("unexpected_root_entry", "An unexpected folder/file in the site root that contains PHP", {"unexpected_root_entry"}),
+    ("sensitive_files", "wp-config.php / .htaccess changed or missing", {"sensitive_file_changed", "sensitive_file_missing"}),
+    ("core_checksum", "WordPress core files differ from the official release", {"wordpress_core_checksum"}),
+    ("restarts", "A site's containers keep restarting", {"container_restart_anomaly"}),
+    ("disk", "Server disk is nearly full", {"disk_pressure"}),
+]
+_MON_DEFAULT_EMAIL_KEYS = ["new_admin_user", "php_in_uploads", "unexpected_root_entry"]
+
+def monitoring_defaults():
+    return {"alert_start_hour": 8, "alert_end_hour": 17, "alert_days": [1, 2, 3, 4, 5, 6, 7], "alert_batch_seconds": 120,
+            "scan_minutes": 60, "uptime_interval": 60, "uptime_failures": 3, "uptime_reminder_hours": 6,
+            "email_keys": list(_MON_DEFAULT_EMAIL_KEYS), "legacy_health_emails": False}
+
+def monitoring_load():
+    cfg = monitoring_defaults()
+    # values given in manager.env (older setup) are the starting point; the saved page settings win
+    cfg.update({"alert_start_hour": ALERT_START_HOUR, "alert_end_hour": ALERT_END_HOUR, "alert_days": sorted(ALERT_DAYS),
+                "alert_batch_seconds": ALERT_BATCH_SECONDS, "scan_minutes": SECURITY_SCAN_INTERVAL_MINUTES,
+                "uptime_interval": UPTIME_INTERVAL_SECONDS, "uptime_failures": UPTIME_FAILURES_TO_ALERT,
+                "uptime_reminder_hours": UPTIME_REMINDER_HOURS, "legacy_health_emails": LEGACY_HEALTH_EMAILS})
+    try:
+        cfg.update(json.loads(MONITORING_SETTINGS_FILE.read_text()))
+    except Exception:
+        pass
+    return cfg
+
+def monitoring_apply(cfg):
+    """Push saved settings into the running monitors (takes effect immediately)."""
+    global ALERT_START_HOUR, ALERT_END_HOUR, ALERT_DAYS, ALERT_BATCH_SECONDS, SECURITY_SCAN_INTERVAL_MINUTES
+    global UPTIME_INTERVAL_SECONDS, UPTIME_FAILURES_TO_ALERT, UPTIME_REMINDER_HOURS, SECURITY_EMAIL_TYPES, LEGACY_HEALTH_EMAILS
+    ALERT_START_HOUR, ALERT_END_HOUR = int(cfg["alert_start_hour"]), int(cfg["alert_end_hour"])
+    ALERT_DAYS = {int(x) for x in cfg["alert_days"]}
+    ALERT_BATCH_SECONDS = int(cfg["alert_batch_seconds"])
+    SECURITY_SCAN_INTERVAL_MINUTES = int(cfg["scan_minutes"])
+    UPTIME_INTERVAL_SECONDS = int(cfg["uptime_interval"])
+    UPTIME_FAILURES_TO_ALERT = int(cfg["uptime_failures"])
+    UPTIME_REMINDER_HOURS = int(cfg["uptime_reminder_hours"])
+    LEGACY_HEALTH_EMAILS = bool(cfg["legacy_health_emails"])
+    types = set()
+    for key, _label, members in MONITOR_EMAIL_CHOICES:
+        if key in cfg["email_keys"]:
+            types |= members
+    SECURITY_EMAIL_TYPES = types
+
+def monitoring_parse_form(form, current):
+    """Validate the submitted form. Returns (new_settings, [error messages])."""
+    errors, cfg = [], dict(current)
+    def num(name, label, lo, hi):
+        try:
+            v = int(str(form.get(name, "")).strip())
+        except ValueError:
+            errors.append(f"{label} must be a whole number.")
+            return None
+        if not lo <= v <= hi:
+            errors.append(f"{label} must be between {lo} and {hi}.")
+            return None
+        return v
+    fields = [("alert_start_hour", "Start hour", 0, 23), ("alert_end_hour", "End hour", 1, 24),
+              ("alert_batch_seconds", "Batching time (seconds)", 0, 3600), ("scan_minutes", "Security scan interval (minutes)", 5, 1440),
+              ("uptime_interval", "Uptime check interval (seconds)", 30, 3600), ("uptime_failures", "Failed checks before a site is 'down'", 1, 10),
+              ("uptime_reminder_hours", "'Still down' reminder gap (hours, 0 = never)", 0, 168)]
+    for name, label, lo, hi in fields:
+        v = num(name, label, lo, hi)
+        if v is not None:
+            cfg[name] = v
+    if cfg["alert_end_hour"] <= cfg["alert_start_hour"]:
+        errors.append("The end hour must be later than the start hour.")
+    days = sorted({int(x) for x in form.getlist("alert_days") if x in {"1", "2", "3", "4", "5", "6", "7"}})
+    if not days:
+        errors.append("Tick at least one day for alerts.")
+    else:
+        cfg["alert_days"] = days
+    valid = {k for k, _l, _m in MONITOR_EMAIL_CHOICES}
+    cfg["email_keys"] = [k for k in form.getlist("email_keys") if k in valid]
+    cfg["legacy_health_emails"] = form.get("legacy_health_emails") == "on"
+    return cfg, errors
+
+try:
+    monitoring_apply(monitoring_load())
+except Exception:
+    pass
+
+def monitoring_status():
+    _alertq_ensure(); now = datetime.now(timezone.utc)
+    with _sq_connect(PLATFORM_DB) as db:
+        pend = db.execute("SELECT COUNT(*),MIN(created) FROM alert_queue WHERE sent=0").fetchone()
+        sev = dict(db.execute("SELECT severity,COUNT(*) FROM alert_queue WHERE sent=0 GROUP BY severity").fetchall())
+    in_hours = alerts_in_business_hours(now)
+    nxt = ""
+    if not in_hours:
+        t = now.astimezone(ALERT_TZ).replace(minute=0, second=0, microsecond=0)
+        for _ in range(24 * 8):
+            t += timedelta(hours=1)
+            if t.isoweekday() in ALERT_DAYS and ALERT_START_HOUR <= t.hour < ALERT_END_HOUR:
+                nxt = t.strftime("%a %d %b, %H:%M"); break
+    digests = [a for a in recent_audit_events(400) if a["action"] == "alert_digest_email"][:8]
+    last_scan = _SCAN_STATE.get("last") or 0
+    due = (last_scan + SECURITY_SCAN_INTERVAL_MINUTES * 60 - time.time()) / 60 if last_scan else None
+    rows, _inc = uptime_summary()
+    return dict(pending=pend[0] or 0, pending_sev=sev, oldest=(pend[1] or "")[:16].replace("T", " "),
+                in_hours=in_hours, next_window=nxt, digests=digests,
+                scan_last=(datetime.fromtimestamp(last_scan, ALERT_TZ).strftime("%d %b %H:%M") if last_scan else "not yet since restart"),
+                scan_next=(f"in about {max(0, round(due))} min" if due is not None else "soon"),
+                open_findings=security_alert_count(), now_local=now.astimezone(ALERT_TZ).strftime("%a %d %b, %H:%M"),
+                sites_up=sum(1 for r in rows if r["cls"] == "up"), sites_down=[r["site"] for r in rows if r["cls"] == "down"],
+                sites_total=len(rows))
+
+MONITORING_HTML = """<!doctype html><html data-theme="{{ current_theme }}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Monitoring &amp; Alerts</title><link rel="stylesheet" href="/static/theme.css">
+<style>*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,sans-serif}
+.wrap{max-width:1100px;margin:26px auto;padding:0 18px}a{color:#82b6ff;text-decoration:none}h1{margin:.2em 0}h2{font-size:17px;margin:0 0 10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}.muted{color:var(--muted);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.grid>div{display:flex;flex-direction:column;justify-content:flex-end}.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}.kpi b{display:block;font-size:22px}.kpi span{color:var(--muted);font-size:12px}
+label{display:block;font-size:13px;margin:10px 0 4px;color:var(--muted)}input[type=number],select{width:100%;padding:9px;background:var(--field);border:1px solid var(--line);border-radius:8px;color:var(--text)}
+.chk{display:flex;gap:8px;align-items:flex-start;margin:7px 0;color:var(--text);font-size:14px}.chk input{margin-top:3px}.days{display:flex;gap:10px;flex-wrap:wrap}
+.btn{border:0;border-radius:8px;padding:9px 14px;background:var(--blue);color:#fff;font-weight:700;cursor:pointer}.btn.alt{background:#475569}
+.flash{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px}.good{color:#4ade80;font-weight:700}.bad{color:#fb7185;font-weight:700}.warn{color:#fbbf24;font-weight:700}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);font-size:13px}</style></head><body><div class="wrap">
+<p><a href="/">&larr; Dashboard</a> &nbsp;&middot;&nbsp; <a href="/alerts">Alerts</a> &nbsp;&middot;&nbsp; <a href="/uptime">Uptime</a> &nbsp;&middot;&nbsp; <a href="/admin/email-settings">Email settings</a></p>
+<h1>Monitoring &amp; Alerts</h1>
+{% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
+{% if not email_on %}<div class="flash"><b class="warn">Email alerts are switched off.</b> Nothing will be sent until you enable them and set a recipient under <a href="/admin/email-settings">Email settings</a>.</div>{% endif %}
+<div class="card"><h2>Status</h2><div class="grid">
+<div class="kpi"><b class="{{ 'good' if st.in_hours else 'warn' }}">{{ 'Open' if st.in_hours else 'Quiet hours' }}</b><span>Now {{ st.now_local }}{% if not st.in_hours and st.next_window %} &middot; next send window {{ st.next_window }}{% endif %}</span></div>
+<div class="kpi"><b>{{ st.pending }}</b><span>alerts waiting to send{% if st.pending %} (oldest {{ st.oldest }} UTC){% endif %}</span></div>
+<div class="kpi"><b>{{ st.open_findings }}</b><span>open security findings &middot; scan last {{ st.scan_last }}, next {{ st.scan_next }}</span></div>
+<div class="kpi"><b class="{{ 'bad' if st.sites_down else 'good' }}">{{ st.sites_up }} / {{ st.sites_total }} up</b><span>{% if st.sites_down %}DOWN: {{ st.sites_down|join(', ') }}{% else %}no sites down{% endif %}</span></div></div>
+<form method="post" action="/admin/monitoring/action" style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<button class="btn blue" name="do" value="flush" {% if not st.pending %}disabled{% endif %}>Send queued alerts now</button>
+<button class="btn alt" name="do" value="sample">Send a sample summary email</button>
+</form><form method="post" action="/alerts/scan" style="margin-top:10px"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn alt">Run a security scan now</button></form>
+<p class="muted" style="margin-bottom:0">"Send queued alerts now" ignores quiet hours, once, for what is already waiting.</p></div>
+<form method="post" action="/admin/monitoring"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="card"><h2>When emails may be sent</h2><p class="muted">Alerts are combined into one email. Outside these hours they are held and sent as a single summary when the window opens. Times are Adelaide time.</p>
+<div class="grid"><div><label>Start hour (0-23)</label><input type="number" name="alert_start_hour" min="0" max="23" value="{{ c.alert_start_hour }}"></div>
+<div><label>End hour (1-24, emails stop at this hour)</label><input type="number" name="alert_end_hour" min="1" max="24" value="{{ c.alert_end_hour }}"></div>
+<div><label>Wait this long to combine alerts (seconds)</label><input type="number" name="alert_batch_seconds" min="0" max="3600" value="{{ c.alert_batch_seconds }}"></div></div>
+<label>Days</label><div class="days">{% for n,name in [(1,'Mon'),(2,'Tue'),(3,'Wed'),(4,'Thu'),(5,'Fri'),(6,'Sat'),(7,'Sun')] %}<label class="chk"><input type="checkbox" name="alert_days" value="{{ n }}" {% if n in c.alert_days %}checked{% endif %}> {{ name }}</label>{% endfor %}</div></div>
+<div class="card"><h2>What counts as an alert</h2><p class="muted">Everything is still recorded on the Alerts page. These are the events that also send email.</p>
+{% for key,label,_m in choices %}<label class="chk"><input type="checkbox" name="email_keys" value="{{ key }}" {% if key in c.email_keys %}checked{% endif %}> {{ label }}</label>{% endfor %}
+<label class="chk"><input type="checkbox" name="legacy_health_emails" {% if c.legacy_health_emails %}checked{% endif %}> Also send the older per-site "UNHEALTHY / RECOVERED" container emails (can duplicate the down detector)</label></div>
+<div class="card"><h2>How often to check</h2><div class="grid">
+<div><label>Security scan every (minutes, 5-1440)</label><input type="number" name="scan_minutes" min="5" max="1440" value="{{ c.scan_minutes }}"></div>
+<div><label>Check each site is up every (seconds, 30-3600)</label><input type="number" name="uptime_interval" min="30" max="3600" value="{{ c.uptime_interval }}"></div>
+<div><label>Failed checks in a row before a site is "down"</label><input type="number" name="uptime_failures" min="1" max="10" value="{{ c.uptime_failures }}"></div>
+<div><label>"Still down" reminder every (hours, 0 = never)</label><input type="number" name="uptime_reminder_hours" min="0" max="168" value="{{ c.uptime_reminder_hours }}"></div></div></div>
+<p><button class="btn blue">Save settings</button> <span class="muted">Takes effect straight away - no restart.</span></p></form>
+<div class="card"><h2>Recent alert emails</h2><table><tr><th>Time</th><th>Result</th><th>Detail</th></tr>
+{% for d in st.digests %}<tr><td>{{ d.timestamp }}</td><td class="{{ 'good' if d.result=='success' else 'bad' }}">{{ d.result }}</td><td>{{ d.detail }}</td></tr>{% else %}<tr><td colspan="3" class="muted">No alert emails sent yet.</td></tr>{% endfor %}</table></div>
+</div></body></html>"""
+
+@APP.get("/admin/monitoring")
+@admin_required
+def monitoring_page():
+    return render_template_string(MONITORING_HTML, c=monitoring_load(), st=monitoring_status(), choices=MONITOR_EMAIL_CHOICES,
+                                  email_on=bool(load_email_settings().get("enabled")), current_theme=current_user_theme())
+
+@APP.post("/admin/monitoring")
+@admin_required
+def monitoring_save():
+    old = monitoring_load()
+    cfg, errors = monitoring_parse_form(request.form, old)
+    if errors:
+        for e in errors:
+            flash(e)
+        flash("Nothing was saved. Fix the problems above and try again.")
+        return redirect(url_for("monitoring_page"))
+    MONITORING_SETTINGS_FILE.write_text(json.dumps(cfg, indent=2))
+    monitoring_apply(cfg)
+    changed = ", ".join(k for k in cfg if cfg[k] != old.get(k)) or "no changes"
+    log_action("monitoring_settings", "system", "success", changed)
+    flash("Monitoring settings saved and applied.")
+    return redirect(url_for("monitoring_page"))
+
+@APP.post("/admin/monitoring/action")
+@admin_required
+def monitoring_action():
+    what = request.form.get("do")
+    if what == "flush":
+        n = alert_queue_flush(force=True)
+        flash(f"Sent one email covering {n} alert(s)." if n else "Nothing was sent (queue empty, email switched off, or the mail server refused it - see the log).")
+    elif what == "sample":
+        ok, detail = send_alert_email("[WP Host] Sample alert summary",
+                                      "This is a sample of the combined alert email.\\n\\n=== example-site ===\\n[CRITICAL] DOWN: example-site   (now)\\n    Problem: HTTP 503\\n"
+                                      "[HIGH] Example finding   (now)\\n    Path: wp-content/uploads/x.php\\n\\nReal summaries list each site's alerts like this.\\n")
+        flash("Sample summary sent." if ok else f"Could not send: {detail}")
+    return redirect(url_for("monitoring_page"))
+
+
+def _close_orphan_findings(db):
+    """Findings for sites that no longer exist can never be re-scanned, so close them."""
+    try:
+        live = {d.name for d in SITES.iterdir() if d.is_dir()} if SITES.exists() else set()
+    except Exception:
+        return
+    if not live:
+        return  # never wipe everything because the sites folder could not be read
+    rows = db.execute("SELECT DISTINCT site FROM security_findings WHERE active=1").fetchall()
+    gone = [r[0] for r in rows if r[0] not in live]
+    for s in gone:
+        db.execute("UPDATE security_findings SET active=0 WHERE site=? AND active=1", (s,))
+    if gone:
+        db.commit()
+
 def active_security_findings():
     now = datetime.now(timezone.utc).isoformat()
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
+        _close_orphan_findings(db)
         rows = db.execute("""
             SELECT id,site,severity,finding_type,path,message,evidence,first_seen,last_seen,email_sent
             FROM security_findings
@@ -3933,9 +5372,16 @@ def active_security_findings():
     ]
 
 def security_alert_count():
-    with sqlite3.connect(PLATFORM_DB) as db:
-        return db.execute("SELECT COUNT(*) FROM security_findings WHERE active=1").fetchone()[0]
+    # same rules as the Alerts page: active, not snoozed, site still exists
+    now = datetime.now(timezone.utc).isoformat()
+    with _sq_connect(PLATFORM_DB) as db:
+        _close_orphan_findings(db)
+        return db.execute(
+            "SELECT COUNT(*) FROM security_findings WHERE active=1 AND (dismissed_until IS NULL OR dismissed_until <= ?)",
+            (now,),
+        ).fetchone()[0]
 
+@_swr_cache(30)
 def active_alerts():
     alerts = []
     for d in sorted([p for p in SITES.iterdir() if p.is_dir()]) if SITES.exists() else []:
@@ -4215,7 +5661,7 @@ def scheduled_backup_all():
                     # Previously swallowed silently; a nightly backup that fails (e.g. disk too full) must be visible.
                     try:
                         log_action("scheduled_backup", d.name, "failed", str(exc)[:300])
-                        send_alert_email(f"Scheduled backup failed: {d.name}", str(exc)[:1500])
+                        queue_alert("backup", d.name, "HIGH", "Scheduled backup failed", str(exc)[:1500])
                     except Exception:
                         pass
 
@@ -4968,94 +6414,160 @@ def site_resources_apply(site):
     return redirect(url_for("site_dashboard", site=site))
 
 
-def list_sites():
-    result = []
-    SITES.mkdir(parents=True, exist_ok=True)
-    for d in sorted([p for p in SITES.iterdir() if p.is_dir()]):
-        meta = site_metadata(d)
-        if not meta:
-            continue
-        site = meta.get("site", d.name)
-        site_type = meta.get("type", "wordpress")
-        web_name = site_app_container_name(site, meta)
+_SIZE_RW_CACHE = {}
+
+def _size_rw_cached(cid, ttl=600):
+    """Container writable-layer size. Measuring it walks the whole layer, so keep it 10 minutes."""
+    hit = _SIZE_RW_CACHE.get(cid)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    raw = docker_client.api.inspect_container(cid, size=True)
+    v = raw.get("SizeRw", 0) or 0
+    _SIZE_RW_CACHE[cid] = (time.time(), v)
+    return v
+
+
+def _list_site_row(d):
+    meta = site_metadata(d)
+    if not meta:
+        return None
+    site = meta.get("site", d.name)
+    site_type = meta.get("type", "wordpress")
+    web_name = site_app_container_name(site, meta)
+    try:
+        c = docker_client.containers.get(web_name)
+        c.reload()
+        status = c.status
+        attrs = c.attrs
+        mem_bytes = attrs["HostConfig"].get("Memory", 0)
+        nano = attrs["HostConfig"].get("NanoCpus", 0)
+        cpu = f"{nano/1_000_000_000:g}" if nano else meta.get("cpus","-")
+        memory = human_bytes(mem_bytes) if mem_bytes else meta.get("memory","-")
+        nets = attrs.get("NetworkSettings",{}).get("Networks",{})
+        ip = nets.get(PROXY_NETWORK,{}).get("IPAddress","-")
+        size = "-"
         try:
-            c = docker_client.containers.get(web_name)
-            c.reload()
-            status = c.status
-            attrs = c.attrs
-            mem_bytes = attrs["HostConfig"].get("Memory", 0)
-            nano = attrs["HostConfig"].get("NanoCpus", 0)
-            cpu = f"{nano/1_000_000_000:g}" if nano else meta.get("cpus","-")
-            memory = human_bytes(mem_bytes) if mem_bytes else meta.get("memory","-")
-            nets = attrs.get("NetworkSettings",{}).get("Networks",{})
-            ip = nets.get(PROXY_NETWORK,{}).get("IPAddress","-")
-            size = "-"
+            size = human_bytes(_size_rw_cached(c.id))
+        except Exception:
+            pass
+        wp_version = "-"
+        if site_type == "wordpress" and status == "running":
             try:
-                raw = docker_client.api.inspect_container(c.id, size=True)
-                size = human_bytes(raw.get("SizeRw",0))
+                ex = c.exec_run(["php","-r","include '/var/www/html/wp-includes/version.php'; echo $wp_version;"])
+                if ex.exit_code == 0:
+                    wp_version = ex.output.decode(errors="ignore").strip() or "-"
             except Exception:
                 pass
-            wp_version = "-"
-            if site_type == "wordpress" and status == "running":
-                try:
-                    ex = c.exec_run(["php","-r","include '/var/www/html/wp-includes/version.php'; echo $wp_version;"])
-                    if ex.exit_code == 0:
-                        wp_version = ex.output.decode(errors="ignore").strip() or "-"
-                except Exception:
-                    pass
-        except Exception:
-            status, cpu, memory, size, wp_version, ip = "not-created", "-", "-", "-", "-", "-"
-            if site_type == "payload":
-                _bs = meta.get("build_status")
-                if _bs == "building" and time.time() - float(meta.get("build_started") or 0) < PAYLOAD_BUILD_STALE_SECONDS:
-                    status = "building"
-                elif _bs in ("building", "failed"):
-                    status = "build-failed"
+    except Exception:
+        status, cpu, memory, size, wp_version, ip = "not-created", "-", "-", "-", "-", "-"
+        if site_type == "payload":
+            _bs = meta.get("build_status")
+            if _bs == "building" and time.time() - float(meta.get("build_started") or 0) < PAYLOAD_BUILD_STALE_SECONDS:
+                status = "building"
+            elif _bs in ("building", "failed"):
+                status = "build-failed"
 
-        bdir = backup_root() / site
-        latest = "-"
-        if bdir.exists():
-            items = sorted(bdir.glob("*.tar.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
-            if items:
-                latest = format_adelaide(items[0].stat().st_mtime)
+    bdir = backup_root() / site
+    latest = "-"
+    if bdir.exists():
+        items = sorted(bdir.glob("*.tar.gz"), key=lambda p:p.stat().st_mtime, reverse=True)
+        if items:
+            latest = format_adelaide(items[0].stat().st_mtime)
 
-        health = site_health(site, meta.get("domain","-"))
-        versions = wp_versions(site)
-        live = container_live_stats(web_name)
-        sftp = sftp_status(site)
-        pma = phpmyadmin_status(site)
-        ops = get_site_ops(site)
-        result.append(dict(
-            site=site,
-            type=site_type,
-            build_status=meta.get("build_status"),
-            build_error=meta.get("build_error"),
-            domain=meta.get("domain","-"),
-            status=status,
-            cpu=cpu,
-            memory=memory,
-            live_cpu=live["cpu"],
-            live_memory=live["memory"],
-            sftp_enabled=sftp["enabled"],
-            sftp_status=sftp["status"],
-            sftp_port=sftp["port"],
-            phpmyadmin_enabled=pma["enabled"],
-            phpmyadmin_status=pma["status"],
-            phpmyadmin_port=pma["port"],
-            mode=ops.get("mode","live"),
-            owner_name=ops.get("owner_name",""),
-            storage=size,
-            wp_version=versions["core"],
-            plugins=versions["plugins"],
-            themes=versions["themes"],
-            health="Healthy" if health["healthy"] else "UNHEALTHY",
-            proxy_ssl=("SSL #" + str(meta.get("certificate_id"))) if meta.get("certificate_id") else ("Proxy #" + str(meta.get("proxy_id"))) if meta.get("proxy_id") else "Not provisioned",
-            http_health=health["http"],
-            db_health=health["db"],
-            ip=ip,
-            backup=latest,
-        ))
-    return result
+    health = site_health(site, meta.get("domain","-"))
+    versions = wp_versions(site)
+    live = container_live_stats(web_name)
+    sftp = sftp_status(site)
+    pma = phpmyadmin_status(site)
+    ops = get_site_ops(site)
+    return dict(
+        site=site,
+        type=site_type,
+        build_status=meta.get("build_status"),
+        build_error=meta.get("build_error"),
+        domain=meta.get("domain","-"),
+        status=status,
+        cpu=cpu,
+        memory=memory,
+        live_cpu=live["cpu"],
+        live_memory=live["memory"],
+        sftp_enabled=sftp["enabled"],
+        sftp_status=sftp["status"],
+        sftp_port=sftp["port"],
+        phpmyadmin_enabled=pma["enabled"],
+        phpmyadmin_status=pma["status"],
+        phpmyadmin_port=pma["port"],
+        mode=ops.get("mode","live"),
+        owner_name=ops.get("owner_name",""),
+        storage=size,
+        wp_version=versions["core"],
+        plugins=versions["plugins"],
+        themes=versions["themes"],
+        health="Healthy" if health["healthy"] else "UNHEALTHY",
+        proxy_ssl=("SSL #" + str(meta.get("certificate_id"))) if meta.get("certificate_id") else ("Proxy #" + str(meta.get("proxy_id"))) if meta.get("proxy_id") else "Not provisioned",
+        http_health=health["http"],
+        db_health=health["db"],
+        ip=ip,
+        backup=latest,
+    )
+
+
+def _list_sites_uncached():
+    from concurrent.futures import ThreadPoolExecutor
+    SITES.mkdir(parents=True, exist_ok=True)
+    dirs = sorted([p for p in SITES.iterdir() if p.is_dir()])
+    if not dirs:
+        return []
+    with ThreadPoolExecutor(max_workers=min(8, len(dirs)), thread_name_prefix="site-row") as pool:
+        rows = list(pool.map(_list_site_row, dirs))
+    return [r for r in rows if r]
+
+
+_SITES_CACHE = {"data": None, "ts": 0.0, "inv": 1, "gen": 0, "refreshing": False}
+_SITES_CACHE_LOCK = threading.Lock()
+SITES_CACHE_TTL = 20
+
+
+def _sites_cache_invalidate():
+    _SITES_CACHE["inv"] += 1
+
+
+def _sites_cache_compute():
+    """Recompute and store. Caller holds the lock. An invalidation that lands
+    while computing keeps the cache dirty, so it is never lost."""
+    c = _SITES_CACHE
+    inv = c["inv"]
+    data = _list_sites_uncached()
+    c.update(data=data, ts=time.time(), clean_inv=inv, gen=c["gen"] + 1)
+    return data
+
+
+def _sites_cache_refresh():
+    try:
+        with _SITES_CACHE_LOCK:
+            _sites_cache_compute()
+    finally:
+        _SITES_CACHE["refreshing"] = False
+
+
+def list_sites(fresh=False):
+    """Cached site list. Within the TTL it returns instantly; past it, the stale
+    list is served while a background refresh runs. First use, fresh=True, or a
+    change since the last compute (any logged action) recomputes now."""
+    import copy
+    c = _SITES_CACHE
+    dirty = c["data"] is None or c.get("clean_inv") != c["inv"]
+    if fresh or dirty:
+        gen = c["gen"]
+        with _SITES_CACHE_LOCK:
+            if c["gen"] != gen and not fresh and c.get("clean_inv") == c["inv"]:
+                return copy.deepcopy(c["data"])   # another thread just computed it
+            return copy.deepcopy(_sites_cache_compute())
+    if time.time() - c["ts"] > SITES_CACHE_TTL and not c["refreshing"]:
+        c["refreshing"] = True
+        threading.Thread(target=_sites_cache_refresh, daemon=True, name="sites-refresh").start()
+    return copy.deepcopy(c["data"])
+
 
 def get_site_summary(site):
     for s in list_sites():
@@ -5112,11 +6624,27 @@ def site_runtime_details(site):
         inv = plugin_theme_inventory(site)
         plugins, themes = [], []
         for line in inv.splitlines():
-            parts=line.split("|")
+            parts=line.strip().split("|")
             if len(parts)>=3 and parts[0]=="PLUGIN":
-                plugins.append({"name":parts[1],"version":parts[2]})
+                plugins.append({"name":parts[1],"version":parts[2],"title":parts[3] if len(parts)>3 else "",
+                                "active":(parts[4]=="1") if len(parts)>4 else False})
             elif len(parts)>=3 and parts[0]=="THEME":
-                themes.append({"name":parts[1],"version":parts[2]})
+                themes.append({"name":parts[1],"version":parts[2],"title":parts[3] if len(parts)>3 else ""})
+        if "INVENTORY-OK" not in inv:
+            data["plugin_error"] = (inv.strip()[-300:] or "WordPress did not answer")
+        try:
+            upd = {x.get("name"): x for x in plugin_updates_load(site).get("plugins", [])}
+            for it in plugins:
+                slug = it["name"].split("/")[0]
+                if slug.endswith(".php"):
+                    slug = slug[:-4]
+                u = upd.get(slug)
+                if u:
+                    it["update_checked"] = True
+                    if u.get("update") == "available":
+                        it["update_version"] = u.get("update_version")
+        except Exception:
+            pass
         data["plugin_items"] = plugins
         data["theme_items"] = themes
 
@@ -5155,6 +6683,18 @@ def ensure_wordpress_proxy_https(site):
     cfg_path.write_text(cfg)
     return True
 
+def apache_workers_conf(memory):
+    """Apache prefork limits sized to the container memory (about 100 MB per worker)."""
+    m = re.fullmatch(r"([0-9]+)(m|g)", (memory or "").strip().lower())
+    mb = (int(m.group(1)) * (1024 if m.group(2) == "g" else 1)) if m else 1024
+    w = max(5, min(32, mb // 100))
+    return ("# WP Host: worker cap sized to the site's memory limit (%s)\n"
+            "<IfModule mpm_prefork_module>\n"
+            "    StartServers             %d\n    MinSpareServers          %d\n    MaxSpareServers          %d\n"
+            "    ServerLimit             %d\n    MaxRequestWorkers       %d\n    MaxConnectionsPerChild 500\n"
+            "</IfModule>\n") % (memory, min(3, w), min(3, w), min(8, w), w, w)
+
+
 def create_site(site, domain, memory, cpus, db_memory, wp_admin, wp_email, wp_password, auto_proxy=True):
     site = site.lower().strip()
     domain = domain.lower().strip()
@@ -5192,6 +6732,7 @@ WP_CPUS={cpus}
 DB_MEMORY={db_memory}
 """
     (site_dir / ".env").write_text(env)
+    (site_dir / "apache-workers.conf").write_text(apache_workers_conf(memory))
     os.chmod(site_dir / ".env", 0o600)
 
     compose = f"""services:
@@ -5246,6 +6787,7 @@ DB_MEMORY={db_memory}
         define('WP_HOST_LOGIN_CALLBACK_SECRET', '{wp_login_secret}');
     volumes:
       - ./wordpress:/var/www/html
+      - ./apache-workers.conf:/etc/apache2/conf-enabled/zz-workers.conf:ro
     mem_limit: ${{WP_MEMORY}}
     cpus: ${{WP_CPUS}}
     networks:
@@ -5503,6 +7045,340 @@ def create_html_php_site(site, domain, memory, cpus, include_db, db_memory, auto
 
     (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
     return meta
+
+CAFE_TEMPLATE_ZIP = Path(__file__).resolve().parent / "site_templates" / "cafe.zip"
+CAFE_APACHE_CONF = "<Directory /var/www/html>\n    AllowOverride All\n    Options -Indexes\n</Directory>\n"
+
+
+def cafe_php_quote(text):
+    """A PHP single-quoted string literal for text (only \\ and ' are special)."""
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def cafe_scaffold_files(web_dir, cafe_name):
+    """Unpack the cafe template into web_dir and set the cafe name in config.php."""
+    import zipfile
+    web_dir = Path(web_dir)
+    root = web_dir.resolve()
+    with zipfile.ZipFile(CAFE_TEMPLATE_ZIP) as z:
+        for info in z.infolist():
+            target = (web_dir / info.filename).resolve()
+            if target != root and root not in target.parents:
+                raise ValueError("Unsafe path in cafe template.")
+        z.extractall(web_dir)
+    cfg = web_dir / "config.php"
+    text = cfg.read_text(encoding="utf-8")
+    marker = "'name'    => 'The Daily Grind',"
+    if marker not in text:
+        raise ValueError("Cafe template config.php has no name line to replace.")
+    cfg.write_text(text.replace(marker, "'name'    => " + cafe_php_quote(cafe_name) + ",", 1), encoding="utf-8")
+    (web_dir / "admin" / "users.php").write_text(
+        "<?php\n// Locked until the admin password is set.\nreturn ['username' => 'admin', 'password_hash' => '!'];\n",
+        encoding="utf-8")
+
+
+def cafe_set_admin_password(site, web_dir, password):
+    """Hash the password with PHP inside the site's own container (so it is
+    exactly what the template's password_verify() expects) and store it."""
+    p = subprocess.run(
+        ["docker", "exec", "-i", f"{site}-web", "php", "-r",
+         "echo password_hash(stream_get_contents(STDIN), PASSWORD_DEFAULT);"],
+        input=password.encode("utf-8"), capture_output=True, timeout=60)
+    h = p.stdout.decode("ascii", "ignore").strip()
+    if p.returncode != 0 or not re.fullmatch(r"\$2y\$[0-9]{2}\$[./A-Za-z0-9]{53}", h):
+        raise RuntimeError("Could not create the admin password hash: " + p.stderr.decode(errors="ignore")[-200:])
+    (Path(web_dir) / "admin" / "users.php").write_text(
+        "<?php\n// Admin credentials (managed from the dashboard).\n"
+        "return ['username' => 'admin', 'password_hash' => '" + h + "'];\n", encoding="utf-8")
+
+
+def create_cafe_site(site, domain, memory, cpus, cafe_name, admin_password, auto_proxy=True):
+    site = site.lower().strip()
+    domain = domain.lower().strip()
+    cafe_name = (cafe_name or "").strip()
+    if not SITE_RE.match(site):
+        raise ValueError("Site ID must use lowercase letters, numbers and hyphens only (max 40).")
+    if not DOMAIN_RE.match(domain):
+        raise ValueError("Domain does not look valid.")
+    if not valid_memory(memory):
+        raise ValueError("Invalid memory setting.")
+    if cpus not in {"0.50","1.00","2.00","4.00"}:
+        raise ValueError("Invalid CPU setting.")
+    if not cafe_name or len(cafe_name) > 80 or re.search(r"[\x00-\x1f\x7f]", cafe_name):
+        raise ValueError("Enter the cafe name (up to 80 characters, one line).")
+    if len(admin_password or "") < 8 or len(admin_password) > 128:
+        raise ValueError("Admin password must be 8 to 128 characters.")
+
+    site_dir = SITES / site
+    if site_dir.exists():
+        raise ValueError("That Site ID already exists.")
+    site_dir.mkdir(parents=True)
+    web_dir = site_dir / "site"
+    web_dir.mkdir()
+
+    (site_dir / ".env").write_text("\n".join([f"SITE={site}", f"DOMAIN={domain}",
+                                              f"WEB_MEMORY={memory}", f"WEB_CPUS={cpus}"]) + "\n")
+    os.chmod(site_dir / ".env", 0o600)
+    (site_dir / "apache-override.conf").write_text(CAFE_APACHE_CONF)
+    (site_dir / "compose.yml").write_text(f"""services:
+  web:
+    image: php:8.3-apache
+    container_name: {site}-web
+    restart: unless-stopped
+    command: ["sh", "-c", "a2enmod rewrite >/dev/null; exec apache2-foreground"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./site:/var/www/html
+      - ./apache-override.conf:/etc/apache2/conf-enabled/zz-override.conf:ro
+    mem_limit: ${{WEB_MEMORY}}
+    cpus: ${{WEB_CPUS}}
+    networks:
+      - internal
+      - wp-proxy
+
+networks:
+  internal:
+    internal: true
+  wp-proxy:
+    external: true
+    name: {PROXY_NETWORK}
+""")
+    meta = dict(site=site, domain=domain, type="html_php", template="cafe", has_database=False,
+                cafe_name=cafe_name, cafe_admin_user="admin",
+                memory=memory, cpus=cpus, db_memory=None, created=datetime.now().isoformat())
+    (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
+
+    try:
+        bg_progress(10, "Setting up the cafe website")
+        cafe_scaffold_files(web_dir, cafe_name)
+        bg_progress(25, "Downloading container images")
+        run(["docker","compose","pull"], cwd=site_dir)
+        bg_progress(40, "Starting the web server")
+        run(["docker","compose","up","-d"], cwd=site_dir)
+        for _ in range(60):
+            try:
+                c = docker_client.containers.get(f"{site}-web")
+                c.reload()
+                if c.status == "running":
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        time.sleep(2)
+        bg_progress(60, "Setting the admin password")
+        cafe_set_admin_password(site, web_dir, admin_password)
+        # The admin panel (running as www-data) edits config.php, uploads images and saves layouts.
+        for dp, dns, fns in os.walk(web_dir):
+            os.chown(dp, 33, 33)
+            for fn in fns:
+                os.chown(os.path.join(dp, fn), 33, 33)
+    except Exception:
+        try:
+            run(["docker","compose","down","-v"], cwd=site_dir)
+        except Exception:
+            pass
+        shutil.rmtree(site_dir, ignore_errors=True)
+        raise
+
+    if auto_proxy:
+        bg_progress(85, "Requesting the HTTPS certificate")
+        meta["dns_addresses"] = resolve_domain(domain)
+        try:
+            meta.update(provision_proxy_ssl(site, domain, forward_host=f"{site}-web"))
+            meta["proxy_status"] = "provisioned"
+        except Exception as exc:
+            meta["proxy_status"] = "failed"
+            meta["proxy_error"] = str(exc)
+    else:
+        meta["proxy_status"] = "not_requested"
+    (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
+    return meta
+
+
+RESTAURANT_TEMPLATE_ZIP = Path(__file__).resolve().parent / "site_templates" / "restaurant.zip"
+RESTAURANT_PORT = 3000
+
+
+def site_forward_port(meta):
+    """The port the reverse proxy must forward to for a site, by type."""
+    meta = meta or {}
+    if meta.get("type") == "payload":
+        return PAYLOAD_APP_PORT
+    if meta.get("runtime") == "node":
+        return RESTAURANT_PORT
+    return 80
+
+
+def admin_password_hash(password):
+    """scrypt$N$r$p$salt$hash - the format the restaurant app's server.js verifies."""
+    import hashlib
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return "scrypt$16384$8$1$" + salt.hex() + "$" + digest.hex()
+
+
+def restaurant_scaffold_files(web_dir, business_name, password):
+    """Unpack the restaurant template into web_dir, set the business name and the admin password hash."""
+    import zipfile, html as _html
+    web_dir = Path(web_dir)
+    root = web_dir.resolve()
+    with zipfile.ZipFile(RESTAURANT_TEMPLATE_ZIP) as z:
+        for info in z.infolist():
+            target = (web_dir / info.filename).resolve()
+            if target != root and root not in target.parents:
+                raise ValueError("Unsafe path in restaurant template.")
+        z.extractall(web_dir)
+    cfile = web_dir / "data" / "content.json"
+    content = json.loads(cfile.read_text(encoding="utf-8"))
+    content["business"]["name"] = business_name
+    cfile.write_text(json.dumps(content, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    esc = _html.escape(business_name, quote=True)
+    for rel in ("public/index.html", "public/admin/index.html"):
+        f = web_dir / rel
+        f.write_text(f.read_text(encoding="utf-8").replace("Crazy Indian", esc), encoding="utf-8")
+    secret = web_dir / "data" / ".admin_password"
+    secret.write_text(admin_password_hash(password) + "\n", encoding="utf-8")
+    os.chmod(secret, 0o400)
+
+
+def create_restaurant_site(site, domain, memory, cpus, business_name, admin_password, auto_proxy=True):
+    site = site.lower().strip()
+    domain = domain.lower().strip()
+    business_name = (business_name or "").strip()
+    if not SITE_RE.match(site):
+        raise ValueError("Site ID must use lowercase letters, numbers and hyphens only (max 40).")
+    if not DOMAIN_RE.match(domain):
+        raise ValueError("Domain does not look valid.")
+    if not valid_memory(memory):
+        raise ValueError("Invalid memory setting.")
+    if cpus not in {"0.50","1.00","2.00","4.00"}:
+        raise ValueError("Invalid CPU setting.")
+    if not business_name or len(business_name) > 80 or re.search(r"[\x00-\x1f\x7f]", business_name):
+        raise ValueError("Enter the business name (up to 80 characters, one line).")
+    if len(admin_password or "") < 8 or len(admin_password) > 128:
+        raise ValueError("Admin password must be 8 to 128 characters.")
+
+    site_dir = SITES / site
+    if site_dir.exists():
+        raise ValueError("That Site ID already exists.")
+    site_dir.mkdir(parents=True)
+    web_dir = site_dir / "site"
+    web_dir.mkdir()
+
+    (site_dir / ".env").write_text("\n".join([f"SITE={site}", f"DOMAIN={domain}",
+                                              f"WEB_MEMORY={memory}", f"WEB_CPUS={cpus}"]) + "\n")
+    os.chmod(site_dir / ".env", 0o600)
+    (site_dir / "compose.yml").write_text(f"""services:
+  web:
+    image: node:20-alpine
+    container_name: {site}-web
+    restart: unless-stopped
+    user: "33:33"
+    working_dir: /app
+    command: ["node", "server.js"]
+    environment:
+      NODE_ENV: production
+      PORT: "{RESTAURANT_PORT}"
+      DATA_FILE: /data/content.json
+      ADMIN_PASSWORD_FILE: /data/.admin_password
+    volumes:
+      - ./site:/app:ro
+      - ./site/data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:{RESTAURANT_PORT}/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: ${{WEB_MEMORY}}
+    cpus: ${{WEB_CPUS}}
+    networks:
+      - internal
+      - wp-proxy
+
+networks:
+  internal:
+    internal: true
+  wp-proxy:
+    external: true
+    name: {PROXY_NETWORK}
+""")
+    meta = dict(site=site, domain=domain, type="html_php", template="restaurant", runtime="node",
+                has_database=False, business_name=business_name,
+                memory=memory, cpus=cpus, db_memory=None, created=datetime.now().isoformat())
+    (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
+
+    try:
+        bg_progress(10, "Setting up the website")
+        restaurant_scaffold_files(web_dir, business_name, admin_password)
+        # The container runs as uid 33 (same as the other HTML/PHP sites), so SFTP and backups line up.
+        for dp, dns, fns in os.walk(web_dir):
+            os.chown(dp, 33, 33)
+            for fn in fns:
+                os.chown(os.path.join(dp, fn), 33, 33)
+        bg_progress(25, "Downloading the Node image")
+        run(["docker","compose","pull"], cwd=site_dir)
+        bg_progress(55, "Starting the website")
+        run(["docker","compose","up","-d"], cwd=site_dir)
+        healthy = False
+        for _ in range(45):
+            try:
+                c = docker_client.containers.get(f"{site}-web")
+                c.reload()
+                health = (c.attrs.get("State", {}).get("Health") or {}).get("Status")
+                if c.status == "running" and health in (None, "healthy"):
+                    healthy = True
+                    break
+                if c.status in ("exited", "dead"):
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        if not healthy:
+            tail = ""
+            try:
+                tail = docker_client.containers.get(f"{site}-web").logs(tail=15).decode(errors="ignore")[-400:]
+            except Exception:
+                pass
+            raise RuntimeError("The website did not start. " + tail)
+    except Exception:
+        try:
+            run(["docker","compose","down","-v"], cwd=site_dir)
+        except Exception:
+            pass
+        shutil.rmtree(site_dir, ignore_errors=True)
+        raise
+
+    if auto_proxy:
+        bg_progress(85, "Requesting the HTTPS certificate")
+        meta["dns_addresses"] = resolve_domain(domain)
+        try:
+            meta.update(provision_proxy_ssl(site, domain, forward_host=f"{site}-web", forward_port=RESTAURANT_PORT))
+            meta["proxy_status"] = "provisioned"
+        except Exception as exc:
+            meta["proxy_status"] = "failed"
+            meta["proxy_error"] = str(exc)
+    else:
+        meta["proxy_status"] = "not_requested"
+    (site_dir / "site.json").write_text(json.dumps(meta, indent=2))
+    return meta
+
 
 def backup_site(site):
     site_dir = SITES / site
@@ -7663,6 +9539,7 @@ def index():
         host_stats=host_stats(),
         alerts=active_alerts(),
         audit_events=recent_audit_events(),
+        wp_admin_logins=recent_wp_admin_logins(),
         metric_summary=metric_summary(24),
     )
 
@@ -7718,6 +9595,7 @@ def site_dashboard(site):
         migration_report=migration_engine.load_report(site),
         vuln_scan=load_vuln_scan_report(site),
         audits=audits[:100],
+        site_wp_logins=recent_wp_admin_logins(100, site),
         host_only=request.host.split(":")[0],
         manager_public_host=request.host.split(":")[0],
         current_user=session.get("username","-"),
@@ -8070,7 +9948,7 @@ def alerts_page():
 @alerts_required
 def alerts_dismiss(finding_id):
     dismissed_until = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("UPDATE security_findings SET dismissed_until=? WHERE id=?", (dismissed_until, finding_id))
         db.commit()
     log_action("security_finding_dismiss", str(finding_id), "success", "snoozed 24h")
@@ -8146,7 +10024,7 @@ main{max-width:620px;padding:42px;background:#0f1b2d;border-radius:16px;text-ali
 <body><main><h1>Website Maintenance</h1><p>This website is temporarily unavailable while maintenance is being performed.</p></main></body></html>""")
         existing = htaccess.read_text() if htaccess.exists() else ""
         # Remove any old platform block first.
-        pattern = re.compile(r"# BEGIN WP-HOST-MAINTENANCE.*?# END WP-HOST-MAINTENANCE\\n?", re.S)
+        pattern = re.compile(r"# BEGIN WP-HOST-MAINTENANCE.*?# END WP-HOST-MAINTENANCE\n?", re.S)
         existing = pattern.sub("", existing)
         block = """# BEGIN WP-HOST-MAINTENANCE
 RewriteEngine On
@@ -8163,7 +10041,7 @@ RewriteRule ^.*$ /.maintenance-platform.html [R=302,L]
     else:
         if htaccess.exists():
             existing = htaccess.read_text()
-            pattern = re.compile(r"# BEGIN WP-HOST-MAINTENANCE.*?# END WP-HOST-MAINTENANCE\\n?", re.S)
+            pattern = re.compile(r"# BEGIN WP-HOST-MAINTENANCE.*?# END WP-HOST-MAINTENANCE\n?", re.S)
             htaccess.write_text(pattern.sub("", existing))
         maintenance_file.unlink(missing_ok=True)
 
@@ -8256,7 +10134,7 @@ def clone_site_to_staging(site):
     ensure_wordpress_proxy_https(staging_site)
 
     # Mark staging and keep it isolated from the public proxy network.
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("INSERT OR IGNORE INTO site_operations(site) VALUES(?)",(staging_site,))
         db.execute(
             "UPDATE site_operations SET mode='maintenance',notes=?,owner_name=?,owner_email=?,owner_phone=? WHERE site=?",
@@ -8291,7 +10169,7 @@ def clone_site_to_staging(site):
 def site_ops_save(site):
     if not SITE_RE.match(site) or not (SITES/site).exists(): abort(404)
     old=get_site_ops(site)
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("UPDATE site_operations SET notes=?,owner_name=?,owner_email=?,owner_phone=?,external_url=? WHERE site=?",(request.form.get("notes","").strip(),request.form.get("owner_name","").strip(),request.form.get("owner_email","").strip(),request.form.get("owner_phone","").strip(),request.form.get("external_url","").strip(),site));db.commit()
     log_action("site_details_update",site,"success",""); flash(f"{site}: details saved."); return redirect(request.referrer or url_for("site_dashboard", site=site))
 
@@ -8306,7 +10184,7 @@ def site_mode(site,mode):
     get_site_ops(site)
     set_site_mode_runtime(site, mode)
 
-    with sqlite3.connect(PLATFORM_DB) as db:
+    with _sq_connect(PLATFORM_DB) as db:
         db.execute("UPDATE site_operations SET mode=? WHERE site=?",(mode,site))
         db.commit()
 
@@ -8640,13 +10518,45 @@ def user_delete(username):
 @APP.post("/create")
 @operator_required
 @background_task(
-    lambda kw: "Creating " + {"html_php": "HTML/PHP", "payload": "Payload CMS"}.get(request.form.get("site_type", "wordpress"), "WordPress") + " site " + request.form.get("site", "").strip().lower(),
+    lambda kw: "Creating " + {"html_php": "HTML/PHP", "cafe": "Cafe", "restaurant": "Restaurant", "payload": "Payload CMS"}.get(request.form.get("site_type", "wordpress"), "WordPress") + " site " + request.form.get("site", "").strip().lower(),
     lock=lambda kw: "create:" + request.form.get("site", "").strip().lower(),
     after=lambda kw: url_for("index"))
 def create():
     site_type = request.form.get("site_type", "wordpress")
     try:
-        if site_type == "html_php":
+        if site_type == "restaurant":
+            meta = create_restaurant_site(
+                request.form.get("site",""),
+                request.form.get("domain",""),
+                request.form.get("memory","1g"),
+                request.form.get("cpus","1.00"),
+                request.form.get("rest_name",""),
+                request.form.get("rest_password",""),
+                request.form.get("auto_proxy","yes") == "yes",
+            )
+            log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
+            _d = meta.get("domain")
+            if meta.get("proxy_status") == "failed":
+                flash(f"Restaurant site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}")
+            else:
+                flash(f"Restaurant site created. Edit prices, menu, colours and hours at https://{_d}/admin/ - any username, and the password you just set.")
+        elif site_type == "cafe":
+            meta = create_cafe_site(
+                request.form.get("site",""),
+                request.form.get("domain",""),
+                request.form.get("memory","1g"),
+                request.form.get("cpus","1.00"),
+                request.form.get("cafe_name",""),
+                request.form.get("cafe_password",""),
+                request.form.get("auto_proxy","yes") == "yes",
+            )
+            log_action("site_create", request.form.get("site",""), "success", request.form.get("domain",""))
+            _d = meta.get("domain")
+            if meta.get("proxy_status") == "failed":
+                flash(f"Cafe site created, but proxy/SSL provisioning failed: {meta.get('proxy_error')}")
+            else:
+                flash(f"Cafe site created. Edit everything else at https://{_d}/admin/ - username: admin, and the password you just set.")
+        elif site_type == "html_php":
             meta = create_html_php_site(
                 request.form.get("site",""),
                 request.form.get("domain",""),
@@ -8862,7 +10772,9 @@ def action(site, action):
             return redirect(request.referrer or url_for("site_dashboard", site=site))
         elif action == "provision-ssl":
             meta = site_metadata(site_dir)
-            provisioned = provision_proxy_ssl(site, meta.get("domain",""))
+            provisioned = provision_proxy_ssl(site, meta.get("domain",""),
+                                              forward_host=site_app_container_name(site, meta),
+                                              forward_port=site_forward_port(meta))
             meta.update(provisioned)
             meta["proxy_status"] = "provisioned"
             meta.pop("proxy_error", None)
@@ -8916,6 +10828,9 @@ if os.environ.get("WP_SCHEDULER_STARTED") != "1":
     threading.Thread(target=health_email_monitor, daemon=True).start()
     threading.Thread(target=security_scanner_loop, daemon=True).start()
     threading.Thread(target=operational_monitor_loop, daemon=True).start()
+    threading.Thread(target=live_stats_loop, daemon=True).start()
+    threading.Thread(target=uptime_monitor_loop, daemon=True).start()
+    threading.Thread(target=alert_queue_loop, daemon=True).start()
 
 if __name__ == "__main__":
     APP.run(host="0.0.0.0", port=int(os.environ.get("WP_DASHBOARD_PORT","8088")))

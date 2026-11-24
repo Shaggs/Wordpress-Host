@@ -19,3 +19,44 @@ __pycache__/
 
 # venv
 manager/venv/
+
+# ---- added 2026-11-24 ----
+# Local branding: never published (theme.css imports it if present; missing = default themes)
+manager/static/brand.css
+
+# Secrets and keys
+*.env
+.env
+*.pem
+*.ppk
+*.key
+
+# Data: databases, user lists, migration sources, NPM data
+*.db
+*.db.*
+*.sqlite
+*.sqlite3
+users.json
+auth.json
+migration-source/
+nginx-proxy-manager/data/
+
+# Backup copies made while patching
+*.bak
+*.bak-*
+*.tgz
+
+# Server-specific notes (public repo: server addresses and internal details)
+CLAUDE.md
+CLAUDE.md.*
+*-handoff.md
+hand.md
+hand.md.*
+
+# One-off patch scripts (already applied to the code) and incident scripts
+/patch_*.py
+/fix_*.py
+/fix.py
+/aa-*.sh
+/clean.sh
+/contain.sh
